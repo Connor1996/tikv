@@ -27,7 +27,7 @@ use raft::eraftpb::ConfChangeType;
 use rocksdb::DB;
 
 use super::metrics::*;
-use pd::{PdClient, RegionStat, Error};
+use pd::{Error, PdClient, RegionStat};
 use prometheus::local::LocalHistogram;
 use raftstore::store::cmd_resp::new_error;
 use raftstore::store::store::StoreInfo;
