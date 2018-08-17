@@ -27,7 +27,7 @@ use raft::eraftpb::ConfChangeType;
 use rocksdb::DB;
 
 use super::metrics::*;
-use pd::{Error, PdClient, RegionStat};
+use pd::{PdClient, RegionStat};
 use prometheus::local::LocalHistogram;
 use raftstore::store::cmd_resp::new_error;
 use raftstore::store::store::StoreInfo;
@@ -278,43 +278,49 @@ impl<T: PdClient> Runner<T> {
             .then(move |resp| {
                 match resp {
                     Ok(mut resp) => {
-                        info!(
-                            "[region {}] try to split region {:?} with {:?}",
-                            region.get_id(),
-                            region,
-                            resp.get_ids()
-                        );
+                        if !resp.get_header().has_error() {
+                            info!(
+                                "[region {}] try to split region {:?} with {:?}",
+                                region.get_id(),
+                                region,
+                                resp.get_ids()
+                            );
 
-                        let req = new_batch_split_region_request(
-                            split_keys,
-                            resp.take_ids().into_vec(),
-                            right_derive,
-                        );
-                        let region_id = region.get_id();
-                        let epoch = region.take_region_epoch();
-                        send_admin_request(&ch, region_id, epoch, peer, req, callback)
-                    }
-                    // When rolling update, there might be some old version tikvs that doesn't support batch split in cluster.
-                    // In this situation, pd version check would refuse ask_batch_split.
-                    // But if update time is long, it may cause large regions, so call ask_split instead.
-                    Err(Error::Incompatible) => {
-                        let tag = format!("[region {}] {}", region.id, peer.id);
-                        let task = Task::AskSplit {
-                            region,
-                            split_key: split_keys[0].clone(),
-                            peer,
-                            right_derive,
-                            callback,
-                        };
-                        if let Err(Stopped(t)) = scheduler.schedule(task) {
-                            error!("{} failed to notify pd to split: Stopped", tag);
-                            match t {
-                                Task::AskSplit { callback, .. } => {
-                                    callback.invoke_with_response(new_error(box_err!(
-                                        "failed to split: Stopped"
-                                    )));
+                            let req = new_batch_split_region_request(
+                                split_keys,
+                                resp.take_ids().into_vec(),
+                                right_derive,
+                            );
+                            let region_id = region.get_id();
+                            let epoch = region.take_region_epoch();
+                            send_admin_request(&ch, region_id, epoch, peer, req, callback)
+                        } else {
+                            // When rolling update, there might be some old version tikvs that doesn't support batch split in cluster.
+                            // In this situation, pd version check would refuse ask_batch_split.
+                            // But if update time is long, it may cause large regions, so call ask_split instead.
+                            let tag = format!("[region {}] {}", region.id, peer.id);
+                            info!(
+                                "{} ask_batch_split is incompatible, use ask_split instead",
+                                tag
+                            );
+
+                            let task = Task::AskSplit {
+                                region,
+                                split_key: split_keys[0].clone(),
+                                peer,
+                                right_derive,
+                                callback,
+                            };
+                            if let Err(Stopped(t)) = scheduler.schedule(task) {
+                                error!("{} failed to notify pd to split: Stopped", tag);
+                                match t {
+                                    Task::AskSplit { callback, .. } => {
+                                        callback.invoke_with_response(new_error(box_err!(
+                                            "failed to split: Stopped"
+                                        )));
+                                    }
+                                    _ => unreachable!(),
                                 }
-                                _ => unreachable!(),
                             }
                         }
                     }

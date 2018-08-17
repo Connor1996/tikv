@@ -30,10 +30,6 @@ quick_error!{
             description("cluster not bootstrap error")
             display("cluster {} is not bootstrapped", cluster_id)
         }
-        Incompatible {
-            description("compatible error")
-            display("feature is not supported in other cluster components")
-        }
         Grpc(err: ::grpc::Error) {
             from()
             cause(err)
