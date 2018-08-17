@@ -119,10 +119,10 @@ impl AdminObserver for SplitObserver {
     ) -> CopResult<()> {
         match req.get_cmd_type() {
             AdminCmdType::Split => {
-                 if !req.has_split() {
+                if !req.has_split() {
                     box_try!(Err(
                         "cmd_type is Split but it doesn't have split request, message maybe \
-                        corrupted!"
+                         corrupted!"
                             .to_owned()
                     ));
                 }
@@ -143,7 +143,7 @@ impl AdminObserver for SplitObserver {
                 if !req.has_splits() {
                     return Err(box_err!(
                         "cmd_type is BatchSplit but it doesn't have splits request, message maybe \
-                        corrupted!"
+                         corrupted!"
                             .to_owned()
                     ));
                 }
