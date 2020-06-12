@@ -580,7 +580,7 @@ impl<T: Transport, C: PdClient> RaftPoller<T, C> {
                 |_| {}
             );
             let mut write_opts = WriteOptions::new();
-            write_opts.set_sync(self.poll_ctx.cfg.sync_log || self.poll_ctx.sync_log);
+            write_opts.set_sync(false);
             self.poll_ctx
                 .engines
                 .raft
