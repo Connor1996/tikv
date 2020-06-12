@@ -1334,9 +1334,9 @@ where
             last_index(&ctx.raft_state)
         };
 
-        if ready.must_sync() {
-            ready_ctx.set_sync_log(true);
-        }
+        // if ready.must_sync() {
+        //     ready_ctx.set_sync_log(true);
+        // }
 
         if !ready.entries().is_empty() {
             self.append(&mut ctx, ready.entries(), ready_ctx)?;
