@@ -557,7 +557,7 @@ impl<T: Transport, C: PdClient> RaftPoller<T, C> {
         fail_point!("raft_before_save");
         if !self.poll_ctx.kv_wb.is_empty() {
             let mut write_opts = WriteOptions::new();
-            write_opts.set_sync(true);
+            write_opts.set_sync(false);
             self.poll_ctx
                 .engines
                 .kv

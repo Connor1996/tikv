@@ -474,7 +474,7 @@ where
         let need_sync = self.enable_sync_log && self.sync_log_hint;
         if self.kv_wb.as_ref().map_or(false, |wb| !wb.is_empty()) {
             let mut write_opts = engine_traits::WriteOptions::new();
-            write_opts.set_sync(need_sync);
+            write_opts.set_sync(false);
             self.kv_wb()
                 .write_to_engine(&self.engine, &write_opts)
                 .unwrap_or_else(|e| {
