@@ -976,6 +976,11 @@ where
         let term = entry.get_term();
         let conf_change: ConfChange = util::parse_data_at(entry.get_data(), index, &self.tag);
         let cmd = util::parse_data_at(conf_change.get_context(), index, &self.tag);
+
+        if should_write_to_engine(&cmd) || apply_ctx.kv_wb().should_write_to_engine() {
+            apply_ctx.commit(self);
+        }
+
         match self.process_raft_cmd(apply_ctx, index, term, cmd) {
             ApplyResult::None => {
                 // If failed, tell Raft that the `ConfChange` was aborted.
