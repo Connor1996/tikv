@@ -41,8 +41,7 @@ impl WriteBatchExt for RocksEngine {
     }
 
     fn support_write_batch_vec(&self) -> bool {
-        let options = self.as_inner().get_db_options();
-        options.is_enable_multi_batch_write()
+        false
     }
 
     fn write_batch(&self) -> Self::WriteBatch {
