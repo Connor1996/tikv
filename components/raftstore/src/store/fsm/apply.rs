@@ -1819,6 +1819,8 @@ where
             derived.set_end_key(keys.front().unwrap().to_vec());
             regions.push(derived.clone());
         }
+        let mut split_wb =
+                    W::write_batch_vec(&ctx.engine, WRITE_BATCH_LIMIT, DEFAULT_APPLY_WB_SIZE);
         let kv_wb_mut = ctx.kv_wb.as_mut().unwrap();
         for req in split_reqs.get_requests() {
             let mut new_region = Region::default();
@@ -1835,15 +1837,43 @@ where
             {
                 peer.set_id(*peer_id);
             }
-            write_peer_state(kv_wb_mut, &new_region, PeerState::Normal, None)
-                .and_then(|_| write_initial_apply_state(kv_wb_mut, new_region.get_id()))
+            write_peer_state(&mut split_wb, &new_region, PeerState::Normal, None)
+                .and_then(|_| write_initial_apply_state(&mut split_wb, new_region.get_id()))
                 .unwrap_or_else(|e| {
                     panic!(
                         "{} fails to save split region {:?}: {:?}",
                         self.tag, new_region, e
                     )
                 });
+            if split_wb.should_write_to_engine() {
+                let mut write_opts = engine_traits::WriteOptions::new();
+                write_opts.set_sync(false);
+                split_wb
+                    .write_to_engine(&ctx.engine, &write_opts)
+                    .unwrap_or_else(|e| {
+                        panic!("failed to write to engine: {:?}", e);
+                    });
+                report_perf_context!(
+                    ctx.perf_context_statistics,
+                    APPLY_PERF_CONTEXT_TIME_HISTOGRAM_STATIC
+                );
+                split_wb.clear();
+            }
             regions.push(new_region);
+        }
+        if !split_wb.is_empty() {
+            let mut write_opts = engine_traits::WriteOptions::new();
+            write_opts.set_sync(false);
+            split_wb
+                .write_to_engine(&ctx.engine, &write_opts)
+                .unwrap_or_else(|e| {
+                    panic!("failed to write to engine: {:?}", e);
+                });
+            report_perf_context!(
+                ctx.perf_context_statistics,
+                APPLY_PERF_CONTEXT_TIME_HISTOGRAM_STATIC
+            );
+            split_wb.clear();
         }
         if right_derive {
             derived.set_start_key(keys.pop_front().unwrap());
