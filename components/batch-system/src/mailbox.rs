@@ -16,6 +16,7 @@ use tikv_util::mpsc;
 /// will drive the fsm to poll for messages.
 pub struct BasicMailbox<Owner: Fsm> {
     sender: mpsc::LooseBoundedSender<Owner::Message>,
+    command_sender: Option<mpsc::Sender<Owner::Message>>, // bounded channel
     state: Arc<FsmState<Owner>>,
 }
 
@@ -23,16 +24,23 @@ impl<Owner: Fsm> BasicMailbox<Owner> {
     #[inline]
     pub fn new(
         sender: mpsc::LooseBoundedSender<Owner::Message>,
+        command_sender: Option<mpsc::Sender<Owner::Message>>,
         fsm: Box<Owner>,
     ) -> BasicMailbox<Owner> {
         BasicMailbox {
             sender,
+            command_sender,
             state: Arc::new(FsmState::new(fsm)),
         }
     }
 
     pub(crate) fn is_connected(&self) -> bool {
         self.sender.is_sender_connected()
+            && self
+                .command_sender
+                .as_ref()
+                .map(|s| s.is_sender_connected())
+                .unwrap_or(true)
     }
 
     pub(crate) fn release(&self, fsm: Box<Owner>) {
@@ -45,12 +53,17 @@ impl<Owner: Fsm> BasicMailbox<Owner> {
 
     #[inline]
     pub fn len(&self) -> usize {
-        self.sender.len()
+        self.sender.len() + self.command_sender.as_ref().map(|s| s.len()).unwrap_or(0)
     }
 
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.sender.is_empty()
+            && self
+                .command_sender
+                .as_ref()
+                .map(|s| s.is_empty())
+                .unwrap_or(true)
     }
 
     /// Force sending a message despite the capacity limit on channel.
@@ -79,10 +92,21 @@ impl<Owner: Fsm> BasicMailbox<Owner> {
         Ok(())
     }
 
+    pub fn block_send<S: FsmScheduler<Fsm = Owner>>(
+        &self,
+        msg: Owner::Message,
+        scheduler: &S,
+    ) -> Result<(), SendError<Owner::Message>> {
+        self.command_sender.as_ref().unwrap().send(msg)?;
+        self.state.notify(scheduler, Cow::Borrowed(self));
+        Ok(())
+    }
+
     /// Close the mailbox explicitly.
     #[inline]
     pub(crate) fn close(&self) {
         self.sender.close_sender();
+        self.command_sender.as_ref().unwrap().close_sender();
         self.state.clear();
     }
 }
@@ -92,6 +116,7 @@ impl<Owner: Fsm> Clone for BasicMailbox<Owner> {
     fn clone(&self) -> BasicMailbox<Owner> {
         BasicMailbox {
             sender: self.sender.clone(),
+            command_sender: self.command_sender.clone(),
             state: self.state.clone(),
         }
     }

@@ -179,6 +179,17 @@ make_auto_flush_static_metric! {
 }
 
 lazy_static! {
+    pub static ref PIPELINE_PROPOSE_BUSY_COUNTER: IntGauge = register_int_gauge!(
+        "pipeline_propose_busy_counter",
+        "Current worker pending + running tasks."
+    )
+    .unwrap();
+    pub static ref PIPELINE_APPLY_BUSY_COUNTER: IntGauge = register_int_gauge!(
+        "pipeline_apply_busy_counter",
+        "Current worker pending + running tasks."
+    )
+    .unwrap();
+
     pub static ref PEER_PROPOSAL_COUNTER_VEC: IntCounterVec =
         register_int_counter_vec!(
             "tikv_raftstore_proposal_total",

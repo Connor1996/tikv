@@ -24,3 +24,13 @@ pub use self::config::Config;
 pub use self::fsm::Fsm;
 pub use self::mailbox::{BasicMailbox, Mailbox};
 pub use self::router::Router;
+
+use lazy_static::*;
+use prometheus::*;
+lazy_static! {
+    pub static ref PIPELINE_COMMAND_BUSY_COUNTER: IntGauge = register_int_gauge!(
+        "pipeline_command_busy_counter",
+        "Current worker pending + running tasks."
+    )
+    .unwrap();
+}

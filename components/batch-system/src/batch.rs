@@ -435,7 +435,7 @@ pub fn create_system<N: Fsm, C: Fsm>(
     sender: mpsc::LooseBoundedSender<C::Message>,
     controller: Box<C>,
 ) -> (BatchRouter<N, C>, BatchSystem<N, C>) {
-    let control_box = BasicMailbox::new(sender, controller);
+    let control_box = BasicMailbox::new(sender, None, controller);
     let (tx, rx) = channel::unbounded();
     let normal_scheduler = NormalScheduler { sender: tx.clone() };
     let control_scheduler = ControlScheduler { sender: tx };

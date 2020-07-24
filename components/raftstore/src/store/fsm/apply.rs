@@ -3338,7 +3338,7 @@ impl ApplyRouter {
         // queued inside both queue of control fsm and normal fsm, which can reorder
         // messages.
         let (sender, apply_fsm) = ApplyFsm::from_registration(reg);
-        let mailbox = BasicMailbox::new(sender, apply_fsm);
+        let mailbox = BasicMailbox::new(sender, None, apply_fsm);
         self.register(region_id, mailbox);
     }
 }
@@ -3366,7 +3366,7 @@ impl ApplyBatchSystem {
         let mut mailboxes = Vec::with_capacity(peers.size_hint().0);
         for peer in peers {
             let (tx, fsm) = ApplyFsm::from_peer(peer);
-            mailboxes.push((peer.region().get_id(), BasicMailbox::new(tx, fsm)));
+            mailboxes.push((peer.region().get_id(), BasicMailbox::new(tx, None, fsm)));
         }
         self.router().register_all(mailboxes);
     }

@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tikv_util::collections::HashMap;
 use tikv_util::Either;
+use crate::PIPELINE_COMMAND_BUSY_COUNTER;
 
 enum CheckDoResult<T> {
     NotExist,
@@ -198,6 +199,19 @@ where
         match self.try_send(addr, msg) {
             Either::Left(res) => res,
             Either::Right(m) => Err(TrySendError::Disconnected(m)),
+        }
+    }
+
+    #[inline]
+    pub fn block_send(&self, addr: u64, msg: N::Message) -> Result<(), SendError<N::Message>> {
+        match self.send(addr, msg) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(m)) => {
+                PIPELINE_COMMAND_BUSY_COUNTER.inc();
+                let caches = unsafe { &mut *self.caches.as_ptr() };
+                caches[&addr].block_send(m, &self.normal_scheduler)
+            }
+            Err(TrySendError::Disconnected(m)) => Err(SendError(m)),
         }
     }
 

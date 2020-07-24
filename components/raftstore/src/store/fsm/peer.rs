@@ -29,7 +29,7 @@ use protobuf::Message;
 use raft::eraftpb::{ConfChangeType, MessageType};
 use raft::{self, SnapshotStatus, INVALID_INDEX, NO_LIMIT};
 use raft::{Ready, StateRole};
-use tikv_util::mpsc::{self, LooseBoundedSender, Receiver};
+use tikv_util::mpsc::{self, LooseBoundedSender, Receiver, Sender};
 use tikv_util::time::duration_to_sec;
 use tikv_util::worker::{Scheduler, Stopped};
 use tikv_util::{escape, is_zero_duration};
@@ -100,8 +100,9 @@ pub struct PeerFsm<S: Snapshot> {
     stopped: bool,
     has_ready: bool,
     early_apply: bool,
-    mailbox: Option<BasicMailbox<PeerFsm<S>>>,
-    pub receiver: Receiver<PeerMsg<S>>,
+    mailbox: Option<BasicMailbox<PeerFsm<E>>>,
+    pub receiver: Receiver<PeerMsg<E>>,
+    pub command_receiver: Receiver<PeerMsg<E>>,
     /// when snapshot is generating or sending, skip split check at most REGION_SPLIT_SKIT_MAX_COUNT times.
     skip_split_count: usize,
 
@@ -137,7 +138,11 @@ impl<S: Snapshot> Drop for PeerFsm<S> {
     }
 }
 
-pub type SenderFsmPair<S> = (LooseBoundedSender<PeerMsg<S>>, Box<PeerFsm<S>>);
+pub type SenderFsmPair<E> = (
+    LooseBoundedSender<PeerMsg<E>>,
+    Sender<PeerMsg<E>>,
+    Box<PeerFsm<E>>,
+);
 
 impl<S: Snapshot> PeerFsm<S> {
     // If we create the peer actively, like bootstrap/split/merge region, we should
@@ -167,8 +172,10 @@ impl<S: Snapshot> PeerFsm<S> {
             "peer_id" => meta_peer.get_id(),
         );
         let (tx, rx) = mpsc::loose_bounded(cfg.notify_capacity);
+        let (ctx, crx) = mpsc::bounded(cfg.notify_capacity);
         Ok((
             tx,
+            ctx,
             Box::new(PeerFsm {
                 early_apply: cfg.early_apply,
                 peer: Peer::new(store_id, cfg, sched, engines, region, meta_peer)?,
@@ -179,6 +186,7 @@ impl<S: Snapshot> PeerFsm<S> {
                 has_ready: false,
                 mailbox: None,
                 receiver: rx,
+                command_receiver: crx,
                 skip_split_count: 0,
                 batch_req_builder: BatchRaftCmdRequestBuilder::new(
                     cfg.raft_entry_max_size.0 as f64,
@@ -209,8 +217,10 @@ impl<S: Snapshot> PeerFsm<S> {
         region.set_id(region_id);
 
         let (tx, rx) = mpsc::loose_bounded(cfg.notify_capacity);
+        let (ctx, crx) = mpsc::bounded(cfg.notify_capacity);
         Ok((
             tx,
+            ctx,
             Box::new(PeerFsm {
                 early_apply: cfg.early_apply,
                 peer: Peer::new(store_id, cfg, sched, engines, &region, peer)?,
@@ -221,6 +231,7 @@ impl<S: Snapshot> PeerFsm<S> {
                 has_ready: false,
                 mailbox: None,
                 receiver: rx,
+                command_receiver: crx,
                 skip_split_count: 0,
                 batch_req_builder: BatchRaftCmdRequestBuilder::new(
                     cfg.raft_entry_max_size.0 as f64,
@@ -1936,14 +1947,14 @@ impl<'a, T: Transport, C: PdClient> PeerFsmDelegate<'a, T, C> {
                 self.ctx.router.close(new_region_id);
             }
 
-            let (sender, mut new_peer) = match PeerFsm::create(
+            let (sender, c_sender, mut new_peer) = match PeerFsm::create(
                 self.ctx.store_id(),
                 &self.ctx.cfg,
                 self.ctx.region_scheduler.clone(),
                 self.ctx.engines.clone(),
                 &new_region,
             ) {
-                Ok((sender, new_peer)) => (sender, new_peer),
+                Ok((sender, c_sender, new_peer)) => (sender, c_sender, new_peer),
                 Err(e) => {
                     // peer information is already written into db, can't recover.
                     // there is probably a bug.
@@ -1981,7 +1992,7 @@ impl<'a, T: Transport, C: PdClient> PeerFsmDelegate<'a, T, C> {
                 // check again after split.
                 new_peer.peer.size_diff_hint = self.ctx.cfg.region_split_check_diff.0;
             }
-            let mailbox = BasicMailbox::new(sender, new_peer);
+            let mailbox = BasicMailbox::new(sender, Some(c_sender), new_peer);
             self.ctx.router.register(new_region_id, mailbox);
             self.ctx
                 .router

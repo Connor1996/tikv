@@ -1,11 +1,9 @@
 // Copyright 2016 TiKV Project Authors. Licensed under Apache-2.0.
 
 use batch_system::{BasicMailbox, BatchRouter, BatchSystem, Fsm, HandlerBuilder, PollHandler};
-use crossbeam::channel::{TryRecvError, TrySendError};
+use crossbeam::channel::{SendError, TryRecvError, TrySendError};
 use engine_rocks::{PerfContext, PerfLevel};
-use engine_rocks::{
-    RocksCompactionJobInfo, RocksEngine, RocksSnapshot, RocksWriteBatch, RocksWriteBatchVec,
-};
+use engine_rocks::{RocksCompactionJobInfo, RocksEngine, RocksWriteBatch, RocksWriteBatchVec};
 use engine_traits::{
     CompactExt, CompactionJobInfo, Iterable, KvEngines, MiscExt, Mutable, Peekable, Snapshot,
     WriteBatch, WriteBatchExt, WriteBatchVecExt, WriteOptions,
@@ -206,12 +204,9 @@ impl<S: Snapshot> RaftRouter<S> {
         cmd: RaftCommand<S>,
     ) -> std::result::Result<(), TrySendError<RaftCommand<S>>> {
         let region_id = cmd.request.get_header().get_region_id();
-        match self.send(region_id, PeerMsg::RaftCommand(cmd)) {
+        match self.block_send(region_id, PeerMsg::RaftCommand(cmd)) {
             Ok(()) => Ok(()),
-            Err(TrySendError::Full(PeerMsg::RaftCommand(cmd))) => Err(TrySendError::Full(cmd)),
-            Err(TrySendError::Disconnected(PeerMsg::RaftCommand(cmd))) => {
-                Err(TrySendError::Disconnected(cmd))
-            }
+            Err(SendError(PeerMsg::RaftCommand(cmd))) => Err(TrySendError::Disconnected(cmd)),
             _ => unreachable!(),
         }
     }
@@ -738,7 +733,28 @@ impl<T: Transport, C: PdClient> PollHandler<PeerFsm<RocksSnapshot>, StoreFsm> fo
         }
         let mut delegate = PeerFsmDelegate::new(peer, &mut self.poll_ctx);
         delegate.handle_msgs(&mut self.peer_msg_buf);
-        delegate.collect_ready();
+        let stall = delegate.is_leader();
+        if stall {
+            while self.peer_msg_buf.len() < self.messages_per_tick {
+                match peer.command_receiver.try_recv() {
+                    Ok(msg) => {
+                        expected_msg_count = None;
+                        self.peer_msg_buf.push(msg)
+                    }
+                    Err(TryRecvError::Empty) => {
+                        expected_msg_count = Some(0);
+                        break;
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        peer.stop();
+                        expected_msg_count = Some(0);
+                        break;
+                    }
+                }
+            }
+            delegate.handle_msgs(&mut self.peer_msg_buf);
+        }
+        delegate.collect_ready(&mut self.pending_proposals);
         expected_msg_count
     }
 
@@ -840,7 +856,7 @@ impl<T, C> RaftPollerBuilder<T, C> {
                 return Ok(true);
             }
 
-            let (tx, mut peer) = box_try!(PeerFsm::create(
+            let (tx, ctx, mut peer) = box_try!(PeerFsm::create(
                 store_id,
                 &self.cfg.value(),
                 self.region_scheduler.clone(),
@@ -857,7 +873,7 @@ impl<T, C> RaftPollerBuilder<T, C> {
             meta.regions.insert(region_id, region.clone());
             // No need to check duplicated here, because we use region id as the key
             // in DB.
-            region_peers.push((tx, peer));
+            region_peers.push((tx, ctx, peer));
             self.coprocessor_host.on_region_changed(
                 region,
                 RegionChangeEvent::Create,
@@ -878,7 +894,7 @@ impl<T, C> RaftPollerBuilder<T, C> {
         // schedule applying snapshot after raft writebatch were written.
         for region in applying_regions {
             info!("region is applying snapshot"; "region" => ?region, "store_id" => store_id);
-            let (tx, mut peer) = PeerFsm::create(
+            let (tx, ctx, mut peer) = PeerFsm::create(
                 store_id,
                 &self.cfg.value(),
                 self.region_scheduler.clone(),
@@ -890,7 +906,7 @@ impl<T, C> RaftPollerBuilder<T, C> {
             meta.region_ranges
                 .insert(enc_end_key(&region), region.get_id());
             meta.regions.insert(region.get_id(), region);
-            region_peers.push((tx, peer));
+            region_peers.push((tx, ctx, peer));
         }
 
         info!(
@@ -1149,11 +1165,11 @@ impl RaftBatchSystem {
             self.apply_router.clone(),
         );
         self.apply_system
-            .schedule_all(region_peers.iter().map(|pair| pair.1.get_peer()));
+            .schedule_all(region_peers.iter().map(|pair| pair.2.get_peer()));
 
         {
             let mut meta = builder.store_meta.lock().unwrap();
-            for (_, peer_fsm) in &region_peers {
+            for (_, _, peer_fsm) in &region_peers {
                 let peer = peer_fsm.get_peer();
                 meta.readers
                     .insert(peer_fsm.region_id(), ReadDelegate::from_peer(peer));
@@ -1172,9 +1188,9 @@ impl RaftBatchSystem {
         self.system.spawn(tag, builder);
         let mut mailboxes = Vec::with_capacity(region_peers.len());
         let mut address = Vec::with_capacity(region_peers.len());
-        for (tx, fsm) in region_peers {
+        for (tx, ctx, fsm) in region_peers {
             address.push(fsm.region_id());
-            mailboxes.push((fsm.region_id(), BasicMailbox::new(tx, fsm)));
+            mailboxes.push((fsm.region_id(), BasicMailbox::new(tx, Some(ctx), fsm)));
         }
         self.router.register_all(mailboxes);
 
@@ -1570,7 +1586,7 @@ impl<'a, T: Transport, C: PdClient> StoreFsmDelegate<'a, T, C> {
                 .unwrap();
         }
         // New created peers should know it's learner or not.
-        let (tx, mut peer) = PeerFsm::replicate(
+        let (tx, ctx, peer) = PeerFsm::replicate(
             self.ctx.store_id(),
             &self.ctx.cfg,
             self.ctx.region_scheduler.clone(),
@@ -1585,7 +1601,7 @@ impl<'a, T: Transport, C: PdClient> StoreFsmDelegate<'a, T, C> {
         // snapshot is applied.
         meta.regions
             .insert(region_id, peer.get_peer().region().to_owned());
-        let mailbox = BasicMailbox::new(tx, peer);
+        let mailbox = BasicMailbox::new(tx, Some(ctx), peer);
         self.ctx.router.register(region_id, mailbox);
         self.ctx
             .router
