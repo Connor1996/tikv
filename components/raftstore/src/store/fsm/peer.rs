@@ -100,9 +100,9 @@ pub struct PeerFsm<S: Snapshot> {
     stopped: bool,
     has_ready: bool,
     early_apply: bool,
-    mailbox: Option<BasicMailbox<PeerFsm<E>>>,
-    pub receiver: Receiver<PeerMsg<E>>,
-    pub command_receiver: Receiver<PeerMsg<E>>,
+    mailbox: Option<BasicMailbox<PeerFsm<S>>>,
+    pub receiver: Receiver<PeerMsg<S>>,
+    pub command_receiver: Receiver<PeerMsg<S>>,
     /// when snapshot is generating or sending, skip split check at most REGION_SPLIT_SKIT_MAX_COUNT times.
     skip_split_count: usize,
 
@@ -138,10 +138,10 @@ impl<S: Snapshot> Drop for PeerFsm<S> {
     }
 }
 
-pub type SenderFsmPair<E> = (
-    LooseBoundedSender<PeerMsg<E>>,
-    Sender<PeerMsg<E>>,
-    Box<PeerFsm<E>>,
+pub type SenderFsmPair<S> = (
+    LooseBoundedSender<PeerMsg<S>>,
+    Sender<PeerMsg<S>>,
+    Box<PeerFsm<S>>,
 );
 
 impl<S: Snapshot> PeerFsm<S> {
@@ -463,6 +463,7 @@ impl<'a, T: Transport, C: PdClient> PeerFsmDelegate<'a, T, C> {
                 }
                 PeerMsg::Noop => {}
                 PeerMsg::UpdateReplicationMode => self.on_update_replication_mode(),
+                PeerMsg::BusyResolved => self.fsm.peer.apply_busy = false,
             }
         }
         // Propose batch request which may be still waiting for more raft-command
@@ -700,7 +701,9 @@ impl<'a, T: Transport, C: PdClient> PeerFsmDelegate<'a, T, C> {
                         region_epoch,
                         cb,
                     },
-                )
+                    true,
+                );
+                return;
             })),
             TxnExtra::default(),
         );
@@ -1631,6 +1634,7 @@ impl<'a, T: Transport, C: PdClient> PeerFsmDelegate<'a, T, C> {
             self.ctx.apply_router.schedule_task(
                 job.region_id,
                 ApplyTask::destroy(job.region_id, job.async_remove, false),
+                true,
             );
         }
         if job.async_remove {
@@ -2322,6 +2326,7 @@ impl<'a, T: Transport, C: PdClient> PeerFsmDelegate<'a, T, C> {
                 self.ctx.apply_router.schedule_task(
                     self.fsm.region_id(),
                     ApplyTask::LogsUpToDate(self.fsm.peer.catch_up_logs.take().unwrap()),
+                    true,
                 );
                 return;
             }
@@ -2356,7 +2361,7 @@ impl<'a, T: Transport, C: PdClient> PeerFsmDelegate<'a, T, C> {
                 // then it will send `Noop` to trigger target apply fsm.
                 self.ctx
                     .apply_router
-                    .schedule_task(region_id, ApplyTask::LogsUpToDate(catch_up_logs));
+                    .schedule_task(region_id, ApplyTask::LogsUpToDate(catch_up_logs), true);
                 return;
             }
         }
@@ -2541,6 +2546,7 @@ impl<'a, T: Transport, C: PdClient> PeerFsmDelegate<'a, T, C> {
                 self.ctx.apply_router.schedule_task(
                     self.fsm.region_id(),
                     ApplyTask::destroy(self.fsm.region_id(), true, true),
+                    true,
                 );
             }
             MergeResultKind::FromTargetSnapshotStep2 => {

@@ -5,6 +5,7 @@ use crossbeam::channel::{SendError, TrySendError};
 use std::borrow::Cow;
 use std::sync::Arc;
 use tikv_util::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// A basic mailbox.
 ///
@@ -18,6 +19,7 @@ pub struct BasicMailbox<Owner: Fsm> {
     sender: mpsc::LooseBoundedSender<Owner::Message>,
     command_sender: Option<mpsc::Sender<Owner::Message>>, // bounded channel
     state: Arc<FsmState<Owner>>,
+    busy: Arc<AtomicBool>,
 }
 
 impl<Owner: Fsm> BasicMailbox<Owner> {
@@ -31,6 +33,7 @@ impl<Owner: Fsm> BasicMailbox<Owner> {
             sender,
             command_sender,
             state: Arc::new(FsmState::new(fsm)),
+            busy: Arc::new(AtomicBool::default()),
         }
     }
 
@@ -66,6 +69,21 @@ impl<Owner: Fsm> BasicMailbox<Owner> {
                 .unwrap_or(true)
     }
 
+    #[inline]
+    pub fn is_busy(&self) -> bool {
+        self.busy.load(Ordering::SeqCst)
+    }
+
+    #[inline]
+    pub fn set_busy(&self) {
+        self.busy.store(true, Ordering::SeqCst)
+    }
+
+    #[inline]
+    pub fn reset_busy(&mut self) {
+        self.busy.store(false, Ordering::SeqCst)
+    }
+
     /// Force sending a message despite the capacity limit on channel.
     #[inline]
     pub fn force_send<S: FsmScheduler<Fsm = Owner>>(
@@ -87,7 +105,13 @@ impl<Owner: Fsm> BasicMailbox<Owner> {
         msg: Owner::Message,
         scheduler: &S,
     ) -> Result<(), TrySendError<Owner::Message>> {
-        self.sender.try_send(msg)?;
+        match self.sender.try_send(msg) {
+            e @ Err(TrySendError::Full(_)) => {
+                self.set_busy();
+                return e;
+            },
+            o @ _ => o?,
+        }
         self.state.notify(scheduler, Cow::Borrowed(self));
         Ok(())
     }
@@ -118,6 +142,7 @@ impl<Owner: Fsm> Clone for BasicMailbox<Owner> {
             sender: self.sender.clone(),
             command_sender: self.command_sender.clone(),
             state: self.state.clone(),
+            busy: self.busy.clone(),
         }
     }
 }

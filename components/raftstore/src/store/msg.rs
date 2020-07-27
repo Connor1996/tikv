@@ -375,6 +375,8 @@ pub enum PeerMsg<S: Snapshot> {
     HeartbeatPd,
     /// Asks region to change replication mode.
     UpdateReplicationMode,
+    /// The busy state of apply fsm is resolved.
+    BusyResolved,
 }
 
 impl<S: Snapshot> fmt::Debug for PeerMsg<S> {
@@ -394,6 +396,7 @@ impl<S: Snapshot> fmt::Debug for PeerMsg<S> {
             PeerMsg::CasualMessage(msg) => write!(fmt, "CasualMessage {:?}", msg),
             PeerMsg::HeartbeatPd => write!(fmt, "HeartbeatPd"),
             PeerMsg::UpdateReplicationMode => write!(fmt, "UpdateReplicationMode"),
+            PeerMsg::BusyResolved => write!(fmt, "Busy resolved"),
         }
     }
 }

@@ -3,7 +3,9 @@
 use batch_system::{BasicMailbox, BatchRouter, BatchSystem, Fsm, HandlerBuilder, PollHandler};
 use crossbeam::channel::{SendError, TryRecvError, TrySendError};
 use engine_rocks::{PerfContext, PerfLevel};
-use engine_rocks::{RocksCompactionJobInfo, RocksEngine, RocksWriteBatch, RocksWriteBatchVec};
+use engine_rocks::{
+    RocksCompactionJobInfo, RocksEngine, RocksSnapshot, RocksWriteBatch, RocksWriteBatchVec,
+};
 use engine_traits::{
     CompactExt, CompactionJobInfo, Iterable, KvEngines, MiscExt, Mutable, Peekable, Snapshot,
     WriteBatch, WriteBatchExt, WriteBatchVecExt, WriteOptions,
@@ -731,10 +733,8 @@ impl<T: Transport, C: PdClient> PollHandler<PeerFsm<RocksSnapshot>, StoreFsm> fo
                 }
             }
         }
-        let mut delegate = PeerFsmDelegate::new(peer, &mut self.poll_ctx);
-        delegate.handle_msgs(&mut self.peer_msg_buf);
-        let stall = delegate.is_leader();
-        if stall {
+        let stall = peer.peer.raft_group.raft.raft_log.last_index() - peer.peer.raft_group.raft.raft_log.committed >= self.poll_ctx.cfg.raft_log_gc_count_limit;
+        if !stall {
             while self.peer_msg_buf.len() < self.messages_per_tick {
                 match peer.command_receiver.try_recv() {
                     Ok(msg) => {
@@ -752,9 +752,12 @@ impl<T: Transport, C: PdClient> PollHandler<PeerFsm<RocksSnapshot>, StoreFsm> fo
                     }
                 }
             }
-            delegate.handle_msgs(&mut self.peer_msg_buf);
+        } else {
+            PIPELINE_PROPOSE_BUSY_COUNTER.inc();
         }
-        delegate.collect_ready(&mut self.pending_proposals);
+        let mut delegate = PeerFsmDelegate::new(peer, &mut self.poll_ctx);
+        delegate.handle_msgs(&mut self.peer_msg_buf);
+        delegate.collect_ready();
         expected_msg_count
     }
 
@@ -1586,7 +1589,7 @@ impl<'a, T: Transport, C: PdClient> StoreFsmDelegate<'a, T, C> {
                 .unwrap();
         }
         // New created peers should know it's learner or not.
-        let (tx, ctx, peer) = PeerFsm::replicate(
+        let (tx, ctx, mut peer) = PeerFsm::replicate(
             self.ctx.store_id(),
             &self.ctx.cfg,
             self.ctx.region_scheduler.clone(),

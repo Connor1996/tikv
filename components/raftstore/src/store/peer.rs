@@ -197,6 +197,8 @@ pub struct Peer {
     leader_lease: Lease,
     pending_reads: ReadIndexQueue,
 
+    pub apply_busy: bool,
+
     /// If it fails to send messages to leader.
     pub leader_unreachable: bool,
     /// Indicates whether the peer should be woken up.
@@ -363,6 +365,7 @@ impl Peer {
             check_stale_conf_ver: 0,
             check_stale_peers: vec![],
             txn_extra_op: Arc::new(AtomicCell::new(TxnExtraOp::Noop)),
+            apply_busy: false,
         };
 
         // If this region has only one peer and I am the one, campaign directly.
@@ -431,7 +434,7 @@ impl Peer {
     /// Also trigger `RegionChangeEvent::Create` here.
     pub fn activate<T, C>(&self, ctx: &PollContext<T, C>) {
         ctx.apply_router
-            .schedule_task(self.region_id, ApplyTask::register(self));
+            .schedule_task(self.region_id, ApplyTask::register(self), true);
 
         ctx.coprocessor_host.on_region_changed(
             self.region(),
@@ -1220,6 +1223,14 @@ impl Peer {
             }
             CheckApplyingSnapStatus::Idle => {}
         }
+        if self.apply_busy {
+            debug!(
+                "apply is still busy";
+                "region_id" => self.region_id,
+                "peer_id" => self.peer.get_id(),
+            );
+            return None;
+        }
 
         if !self.pending_messages.is_empty() {
             fail_point!("raft_before_follower_send");
@@ -1273,7 +1284,7 @@ impl Peer {
                 self.pending_request_snapshot_count
                     .fetch_add(1, Ordering::SeqCst);
                 ctx.apply_router
-                    .schedule_task(self.region_id, ApplyTask::Snapshot(gen_task));
+                    .schedule_task(self.region_id, ApplyTask::Snapshot(gen_task), true);
             }
             return None;
         }
@@ -1511,12 +1522,6 @@ impl Peer {
                 );
             }
             if !committed_entries.is_empty() {
-                self.last_applying_idx = committed_entries.last().unwrap().get_index();
-                if self.last_applying_idx >= self.last_urgent_proposal_idx {
-                    // Urgent requests are flushed, make it lazy again.
-                    self.raft_group.skip_bcast_commit(true);
-                    self.last_urgent_proposal_idx = u64::MAX;
-                }
                 let committed_index = self.raft_group.raft.raft_log.committed;
                 let term = self.raft_group.raft.raft_log.term(committed_index).unwrap();
                 let cbs = self.proposals.take(committed_index, term);
@@ -1530,8 +1535,18 @@ impl Peer {
                     term,
                     cbs,
                 );
-                ctx.apply_router
-                    .schedule_task(self.region_id, ApplyTask::apply(apply));
+                if ctx.apply_router
+                    .schedule_task(self.region_id, ApplyTask::apply(apply), false) {
+                    self.last_applying_idx = committed_index;
+                    if self.last_applying_idx >= self.last_urgent_proposal_idx {
+                        // Urgent requests are flushed, make it lazy again.
+                        self.raft_group.skip_bcast_commit(true);
+                        self.last_urgent_proposal_idx = u64::MAX;
+                    }
+                } else {
+                    PIPELINE_APPLY_BUSY_COUNTER.inc();
+                    self.apply_busy = true;
+                }
             }
             fail_point!("after_send_to_apply_1003", self.peer_id() == 1003, |_| {});
             // Check whether there is a pending generate snapshot task, the task
@@ -1542,7 +1557,7 @@ impl Peer {
                 self.pending_request_snapshot_count
                     .fetch_add(1, Ordering::SeqCst);
                 ctx.apply_router
-                    .schedule_task(self.region_id, ApplyTask::Snapshot(gen_task));
+                    .schedule_task(self.region_id, ApplyTask::Snapshot(gen_task), false);
             }
         }
 

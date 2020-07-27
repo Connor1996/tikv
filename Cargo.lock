@@ -254,6 +254,8 @@ dependencies = [
  "criterion",
  "crossbeam",
  "derive_more",
+ "lazy_static",
+ "prometheus",
  "serde",
  "serde_derive",
  "slog",

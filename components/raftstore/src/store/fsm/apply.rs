@@ -15,7 +15,7 @@ use std::time::Duration;
 use std::{cmp, usize};
 
 use batch_system::{BasicMailbox, BatchRouter, BatchSystem, Fsm, HandlerBuilder, PollHandler};
-use crossbeam::channel::{TryRecvError, TrySendError};
+use crossbeam::channel::{TryRecvError, SendError, TrySendError};
 use engine_rocks::{PerfContext, PerfLevel};
 use engine_rocks::{RocksEngine, RocksSnapshot};
 use engine_traits::{KvEngine, Snapshot, WriteBatch, WriteBatchVecExt};
@@ -3170,6 +3170,12 @@ where
                 }
             }
         }
+        if let Some(mailbox) = normal.mailbox.as_mut() {
+            if mailbox.is_busy() {
+                mailbox.reset_busy();
+                self.apply_ctx.notifier.notify(normal.delegate.region_id(), PeerMsg::BusyResolved);
+            }
+        }
         normal.handle_tasks(&mut self.apply_ctx, &mut self.msg_buf);
         if normal.delegate.wait_merge_state.is_some() {
             // Check it again immediately as catching up logs can be very fast.
@@ -3268,78 +3274,84 @@ impl DerefMut for ApplyRouter {
 }
 
 impl ApplyRouter {
-    pub fn schedule_task(&self, region_id: u64, msg: Msg<RocksEngine>) {
-        let reg = match self.try_send(region_id, msg) {
-            Either::Left(Ok(())) => return,
-            Either::Left(Err(TrySendError::Disconnected(msg))) | Either::Right(msg) => match msg {
-                Msg::Registration(reg) => reg,
-                Msg::Apply { mut apply, .. } => {
-                    info!(
-                        "target region is not found, drop proposals";
-                        "region_id" => region_id
-                    );
-                    for p in apply.cbs.drain(..) {
-                        let cmd =
-                            PendingCmd::<RocksSnapshot>::new(p.index, p.term, p.cb, p.txn_extra);
-                        notify_region_removed(apply.region_id, apply.peer_id, cmd);
+    pub fn schedule_task(&self, region_id: u64, msg: Msg<RocksEngine>, force: bool) -> bool {
+        let msg = match self.try_send(region_id, msg) {
+            Either::Left(Ok(())) => return true,
+            Either::Left(Err(TrySendError::Disconnected(msg))) | Either::Right(msg) => msg,
+            Either::Left(Err(TrySendError::Full(msg))) => {
+                if force {
+                    match self.force_send(region_id, msg) {
+                       Ok(()) => return true,
+                       Err(SendError(msg)) => msg,
                     }
-                    return;
+                } else {
+                    return false;
                 }
-                Msg::Destroy(_) | Msg::Noop => {
-                    info!(
-                        "target region is not found, drop messages";
-                        "region_id" => region_id
-                    );
-                    return;
-                }
-                Msg::Snapshot(_) => {
-                    warn!(
-                        "region is removed before taking snapshot, are we shutting down?";
-                        "region_id" => region_id
-                    );
-                    return;
-                }
-                Msg::LogsUpToDate(cul) => {
-                    warn!(
-                        "region is removed before merged, are we shutting down?";
-                        "region_id" => region_id,
-                        "merge" => ?cul.merge,
-                    );
-                    return;
-                }
-                Msg::Change {
-                    cmd: ChangeCmd::RegisterObserver { region_id, .. },
-                    cb,
-                    ..
-                }
-                | Msg::Change {
-                    cmd: ChangeCmd::Snapshot { region_id, .. },
-                    cb,
-                    ..
-                } => {
-                    warn!("target region is not found";
-                            "region_id" => region_id);
-                    let resp = ReadResponse {
-                        response: cmd_resp::new_error(Error::RegionNotFound(region_id)),
-                        snapshot: None,
-                        txn_extra_op: TxnExtraOp::Noop,
-                    };
-                    cb.invoke_read(resp);
-                    return;
-                }
-                #[cfg(any(test, feature = "testexport"))]
-                Msg::Validate(_, _) => return,
-            },
-            Either::Left(Err(TrySendError::Full(_))) => unreachable!(),
+            }
         };
-
-        // Messages in one region are sent in sequence, so there is no race here.
-        // However, this can't be handled inside control fsm, as messages can be
-        // queued inside both queue of control fsm and normal fsm, which can reorder
-        // messages.
-        let (sender, apply_fsm) = ApplyFsm::from_registration(reg);
-        let mailbox = BasicMailbox::new(sender, None, apply_fsm);
-        self.register(region_id, mailbox);
+        match msg {
+            Msg::Registration(reg) => {
+                // Messages in one region are sent in sequence, so there is no race here.
+                // However, this can't be handled inside control fsm, as messages can be
+                // queued inside both queue of control fsm and normal fsm, which can reorder
+                // messages.
+                let (sender, apply_fsm) = ApplyFsm::from_registration(reg);
+                let mailbox = BasicMailbox::new(sender, None, apply_fsm);
+                self.register(region_id, mailbox);
+            },
+            Msg::Apply { mut apply, .. } => {
+                info!(
+                    "target region is not found, drop proposals";
+                    "region_id" => region_id
+                );
+                for p in apply.cbs.drain(..) {
+                    let cmd =
+                        PendingCmd::<RocksSnapshot>::new(p.index, p.term, p.cb, p.txn_extra);
+                    notify_region_removed(apply.region_id, apply.peer_id, cmd);
+                }
+            }
+            Msg::Destroy(_) | Msg::Noop => {
+                info!(
+                    "target region is not found, drop messages";
+                    "region_id" => region_id
+                );
+            }
+            Msg::Snapshot(_) => {
+                warn!(
+                    "region is removed before taking snapshot, are we shutting down?";
+                    "region_id" => region_id
+                );
+            }
+            Msg::LogsUpToDate(cul) => {
+                warn!(
+                    "region is removed before merged, are we shutting down?";
+                    "region_id" => region_id,
+                    "merge" => ?cul.merge,
+                );
+            }
+            Msg::Change {
+                cmd: ChangeCmd::RegisterObserver { region_id, .. },
+                cb,
+                ..
+            }
+            | Msg::Change {
+                cmd: ChangeCmd::Snapshot { region_id, .. },
+                cb,
+                ..
+            } => {
+                warn!("target region is not found";
+                        "region_id" => region_id);
+                let resp = ReadResponse {
+                    response: cmd_resp::new_error(Error::RegionNotFound(region_id)),
+                    snapshot: None,
+                    txn_extra_op: TxnExtraOp::Noop,
+                };
+                cb.invoke_read(resp);
+            }
+            #[cfg(any(test, feature = "testexport"))]
+            Msg::Validate(_, _) => {},
+        };
+        true
     }
 }
 
