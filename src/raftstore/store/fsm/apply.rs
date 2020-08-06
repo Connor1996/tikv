@@ -1313,6 +1313,8 @@ impl ApplyDelegate {
                 &start_key,
                 &end_key,
                 use_delete_range,
+                32 * 1024,
+                false,
             )
             .unwrap_or_else(|e| {
                 panic!(

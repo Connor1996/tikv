@@ -482,9 +482,8 @@ impl<'a, T: Transport, C: PdClient> PeerFsmDelegate<'a, T, C> {
     }
 
     fn on_clear_region_size(&mut self) {
-        self.fsm.peer.approximate_size = None;
-        self.fsm.peer.approximate_keys = None;
-        self.register_split_region_check_tick();
+        self.fsm.peer.approximate_size = Some(0);
+        self.fsm.peer.approximate_keys = Some(0);
     }
 
     fn on_significant_msg(&mut self, msg: SignificantMsg) {

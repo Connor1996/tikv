@@ -64,6 +64,9 @@ pub struct GCConfig {
     pub ratio_threshold: f64,
     pub batch_keys: usize,
     pub max_write_bytes_per_sec: ReadableSize,
+    pub delete_batch: usize,
+    pub enable_delete: bool,
+    pub delete_ingest: bool,
 }
 
 impl Default for GCConfig {
@@ -72,6 +75,9 @@ impl Default for GCConfig {
             ratio_threshold: DEFAULT_GC_RATIO_THRESHOLD,
             batch_keys: DEFAULT_GC_BATCH_KEYS,
             max_write_bytes_per_sec: ReadableSize(DEFAULT_GC_MAX_WRITE_BYTES_PER_SEC),
+            delete_batch: 32 * 1024,
+            enable_delete: false,
+            delete_ingest: false,
         }
     }
 }
@@ -380,43 +386,46 @@ impl<E: Engine> GCRunner<E> {
             "start_key" => %start_key, "end_key" => %end_key, "cost_time" => ?delete_files_start_time.elapsed()
         );
 
-        // Then, delete all remaining keys in the range.
-        let cleanup_all_start_time = Instant::now();
-        for cf in cfs {
-            // TODO: set use_delete_range with config here.
-            delete_all_in_range_cf(local_storage, cf, &start_data_key, &end_data_key, false)
-                .map_err(|e| {
-                    let e: Error = box_err!(e);
-                    warn!(
-                        "unsafe destroy range failed at delete_all_in_range_cf"; "err" => ?e
-                    );
-                    e
-                })?;
+        if self.cfg.enable_delete {
+
+            // Then, delete all remaining keys in the range.
+            let cleanup_all_start_time = Instant::now();
+            for cf in cfs {
+                // TODO: set use_delete_range with config here.
+                delete_all_in_range_cf(local_storage, cf, &start_data_key, &end_data_key, false, self.cfg.delete_batch, self.cfg.delete_ingest)
+                    .map_err(|e| {
+                        let e: Error = box_err!(e);
+                        warn!(
+                            "unsafe destroy range failed at delete_all_in_range_cf"; "err" => ?e
+                        );
+                        e
+                    })?;
+            }
+
+            let cleanup_all_time_cost = cleanup_all_start_time.elapsed();
+
+            if let Some(router) = self.raft_store_router.as_ref() {
+                router
+                    .send_store(StoreMsg::ClearRegionSizeInRange {
+                        start_key: start_key.as_encoded().to_vec(),
+                        end_key: end_key.as_encoded().to_vec(),
+                    })
+                    .unwrap_or_else(|e| {
+                        // Warn and ignore it.
+                        warn!(
+                            "unsafe destroy range: failed sending ClearRegionSizeInRange";
+                            "err" => ?e
+                        );
+                    });
+            } else {
+                warn!("unsafe destroy range: can't clear region size information: raft_store_router not set");
+            }
+
+            info!(
+                "unsafe destroy range finished cleaning up all";
+                "start_key" => %start_key, "end_key" => %end_key, "cost_time" => ?cleanup_all_time_cost,
+            );
         }
-
-        let cleanup_all_time_cost = cleanup_all_start_time.elapsed();
-
-        if let Some(router) = self.raft_store_router.as_ref() {
-            router
-                .send_store(StoreMsg::ClearRegionSizeInRange {
-                    start_key: start_key.as_encoded().to_vec(),
-                    end_key: end_key.as_encoded().to_vec(),
-                })
-                .unwrap_or_else(|e| {
-                    // Warn and ignore it.
-                    warn!(
-                        "unsafe destroy range: failed sending ClearRegionSizeInRange";
-                        "err" => ?e
-                    );
-                });
-        } else {
-            warn!("unsafe destroy range: can't clear region size information: raft_store_router not set");
-        }
-
-        info!(
-            "unsafe destroy range finished cleaning up all";
-            "start_key" => %start_key, "end_key" => %end_key, "cost_time" => ?cleanup_all_time_cost,
-        );
         Ok(())
     }
 

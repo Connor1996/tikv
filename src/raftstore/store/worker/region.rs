@@ -299,7 +299,8 @@ impl<R: CasualRouter> SnapContext<R> {
             &self.engines.kv,
             &start_key,
             &end_key,
-            self.use_delete_range
+            self.use_delete_range,
+            32 * 1024,
         ));
         check_abort(&abort)?;
 
@@ -412,6 +413,7 @@ impl<R: CasualRouter> SnapContext<R> {
             start_key,
             end_key,
             self.use_delete_range,
+            32 * 1024,
         ) {
             error!(
                 "failed to delete data in range";

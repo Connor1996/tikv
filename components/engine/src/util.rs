@@ -31,20 +31,21 @@ pub fn check_key_in_range(
 
 // In our tests, we found that if the batch size is too large, running delete_all_in_range will
 // reduce OLTP QPS by 30% ~ 60%. We found that 32K is a proper choice.
-pub const MAX_DELETE_BATCH_SIZE: usize = 32 * 1024;
+pub const MAX_DELETE_BATCH_SIZE: usize = 128;
 
 pub fn delete_all_in_range(
     db: &DB,
     start_key: &[u8],
     end_key: &[u8],
     use_delete_range: bool,
+    batch: usize,
 ) -> Result<()> {
     if start_key >= end_key {
         return Ok(());
     }
 
     for cf in db.cf_names() {
-        delete_all_in_range_cf(db, cf, start_key, end_key, use_delete_range)?;
+        delete_all_in_range_cf(db, cf, start_key, end_key, use_delete_range, batch, false)?;
     }
 
     Ok(())
@@ -56,6 +57,8 @@ pub fn delete_all_in_range_cf(
     start_key: &[u8],
     end_key: &[u8],
     use_delete_range: bool,
+    batch: usize,
+    ingest: bool,
 ) -> Result<()> {
     let handle = rocks::util::get_cf_handle(db, cf)?;
     let wb = WriteBatch::new();
@@ -72,9 +75,26 @@ pub fn delete_all_in_range_cf(
         }
         let mut it = db.new_iterator_cf(cf, iter_opt)?;
         it.seek(start_key.into())?;
+
+        if ingest {
+            // let builder = SstWriterBuilder::new()
+            // .set_db(self)
+            // .set_cf(cf)
+            // .set_in_memory(true);
+            // let mut sst_writer = builder.build(sst_path.as_str())?;
+            // while it.valid()? {
+            //     sst_writer.delete(it.key())?;
+            //     it.next()?;
+            // }
+            // sst_writer.finish()?;
+            // let handle = db.cf_handle(cf)?;
+            // let mut opt = IngestExternalFileOptions::new();
+            // opt.move_files(true);
+            // return db.ingest_external_file_cf(handle, &opt, &[sst_path.as_str()]);
+        } 
         while it.valid()? {
             wb.delete_cf(handle, it.key())?;
-            if wb.data_size() >= MAX_DELETE_BATCH_SIZE {
+            if wb.data_size() >= batch {
                 // Can't use write_without_wal here.
                 // Otherwise it may cause dirty data when applying snapshot.
                 db.write(&wb)?;
@@ -85,10 +105,9 @@ pub fn delete_all_in_range_cf(
                 break;
             }
         }
-    }
-
-    if wb.count() > 0 {
-        db.write(&wb)?;
+        if wb.count() > 0 {
+            db.write(&wb)?;
+        }
     }
 
     Ok(())
