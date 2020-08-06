@@ -6,13 +6,16 @@ use crate::rocks;
 use crate::rocks::{Range, TablePropertiesCollection, Writable, WriteBatch, DB};
 use crate::CF_LOCK;
 
+use std::thread;
+use std::time::Duration;
 use super::{Error, Result};
 use super::{IterOption, Iterable};
 use tikv_util::keybuilder::KeyBuilder;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
-use crate::rocks::{IngestExternalFileOptions, create_sst_writer};
+use tikv_util::time::time_now_sec;
+use crate::rocks::{IngestExternalFileOptions, SstFileWriter, EnvOptions};
 
 /// Check if key in range [`start_key`, `end_key`).
 pub fn check_key_in_range(
@@ -81,7 +84,7 @@ pub fn delete_all_in_range_cf(
         it.seek(start_key.into())?;
         let mut writer = None;
         let mut count = 0;
-        if ingest {
+        if batch == 0 {
             let mut s = DefaultHasher::new();
             start_key.hash(&mut s);
             let name = s.finish().to_string();
@@ -97,6 +100,7 @@ pub fn delete_all_in_range_cf(
                 if wb.count() > batch {
                     db.write(&wb)?;
                     wb.clear();
+                    thread::sleep(Duration::from_millis(1));
                 }
             }
 
@@ -131,6 +135,15 @@ pub fn delete_all_files_in_range(db: &DB, start_key: &[u8], end_key: &[u8]) -> R
     }
 
     Ok(())
+}
+
+fn create_sst_writer(db: &DB, cf: &str, name: String) -> Result<SstFileWriter> {
+    let handle = db.cf_handle(cf).unwrap();
+    let opts = db.get_options_cf(handle);
+    let mut writer = SstFileWriter::new(EnvOptions::new(), opts);
+    let ts = time_now_sec();
+    writer.open(&format!("temp.{}.{}.sst", name, ts))?;
+    Ok(writer)
 }
 
 pub fn get_range_properties_cf(

@@ -1110,6 +1110,7 @@ impl RaftBatchSystem {
             cfg.use_delete_range,
             cfg.clean_stale_peer_delay.0,
             self.router(),
+            cfg.delete_batch,
         );
         let timer = region_runner.new_timer();
         box_try!(workers.region_worker.start_with_timer(region_runner, timer));

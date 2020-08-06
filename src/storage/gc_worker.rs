@@ -67,6 +67,7 @@ pub struct GCConfig {
     pub delete_batch: usize,
     pub enable_delete: bool,
     pub delete_ingest: bool,
+    pub delete_sleep: u64,
 }
 
 impl Default for GCConfig {
@@ -78,6 +79,7 @@ impl Default for GCConfig {
             delete_batch: 32 * 1024,
             enable_delete: false,
             delete_ingest: false,
+            delete_sleep: 2,
         }
     }
 }
@@ -387,7 +389,7 @@ impl<E: Engine> GCRunner<E> {
         );
 
         if self.cfg.enable_delete {
-
+            thread::sleep(Duration::from_secs(self.cfg.delete_sleep));
             // Then, delete all remaining keys in the range.
             // let cleanup_all_start_time = Instant::now();
             // for cf in cfs {

@@ -217,6 +217,7 @@ struct SnapContext<R> {
     clean_stale_peer_delay: Duration,
     pending_delete_ranges: PendingDeleteRanges,
     router: R,
+    delete_batch: usize,
 }
 
 impl<R: CasualRouter> SnapContext<R> {
@@ -418,7 +419,7 @@ impl<R: CasualRouter> SnapContext<R> {
             start_key,
             end_key,
             self.use_delete_range,
-            32 * 1024,
+            self.delete_batch,
         ) {
             error!(
                 "failed to delete data in range";
@@ -555,6 +556,7 @@ impl<R: CasualRouter> Runner<R> {
         use_delete_range: bool,
         clean_stale_peer_delay: Duration,
         router: R,
+        delete_batch: usize,
     ) -> Runner<R> {
         Runner {
             pool: ThreadPoolBuilder::with_default_factory(thd_name!("snap-generator"))
@@ -568,6 +570,7 @@ impl<R: CasualRouter> Runner<R> {
                 clean_stale_peer_delay,
                 pending_delete_ranges: PendingDeleteRanges::default(),
                 router,
+                delete_batch,
             },
             pending_applies: VecDeque::new(),
         }

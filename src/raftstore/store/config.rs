@@ -137,6 +137,8 @@ pub struct Config {
 
     #[serde(with = "rocks_config::perf_level_serde")]
     pub perf_level: PerfLevel,
+
+    pub delete_batch: usize, 
 }
 
 impl Default for Config {
@@ -145,6 +147,7 @@ impl Default for Config {
         Config {
             sync_log: true,
             prevote: true,
+            delete_batch: 256,
             raftdb_path: String::new(),
             capacity: ReadableSize(0),
             raft_base_tick_interval: ReadableDuration::secs(1),
