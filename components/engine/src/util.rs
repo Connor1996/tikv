@@ -9,6 +9,10 @@ use crate::CF_LOCK;
 use super::{Error, Result};
 use super::{IterOption, Iterable};
 use tikv_util::keybuilder::KeyBuilder;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hash;
+use std::hash::Hasher;
+use crate::rocks::{IngestExternalFileOptions, create_sst_writer};
 
 /// Check if key in range [`start_key`, `end_key`).
 pub fn check_key_in_range(
@@ -75,38 +79,41 @@ pub fn delete_all_in_range_cf(
         }
         let mut it = db.new_iterator_cf(cf, iter_opt)?;
         it.seek(start_key.into())?;
-
+        let mut writer = None;
+        let mut count = 0;
         if ingest {
-            // let builder = SstWriterBuilder::new()
-            // .set_db(self)
-            // .set_cf(cf)
-            // .set_in_memory(true);
-            // let mut sst_writer = builder.build(sst_path.as_str())?;
-            // while it.valid()? {
-            //     sst_writer.delete(it.key())?;
-            //     it.next()?;
-            // }
-            // sst_writer.finish()?;
-            // let handle = db.cf_handle(cf)?;
-            // let mut opt = IngestExternalFileOptions::new();
-            // opt.move_files(true);
-            // return db.ingest_external_file_cf(handle, &opt, &[sst_path.as_str()]);
-        } 
+            let mut s = DefaultHasher::new();
+            start_key.hash(&mut s);
+            let name = s.finish().to_string();
+            writer.replace(create_sst_writer(db, cf, name)?);
+        }
+        let wb = WriteBatch::new();
         while it.valid()? {
-            wb.delete_cf(handle, it.key())?;
-            if wb.data_size() >= batch {
-                // Can't use write_without_wal here.
-                // Otherwise it may cause dirty data when applying snapshot.
-                db.write(&wb)?;
-                wb.clear();
+            count += 1;
+            if writer.is_some() {
+                writer.as_mut().unwrap().delete(it.key())?;
+            } else {
+                wb.delete_cf(handle, it.key()).unwrap();
+                if wb.count() > batch {
+                    db.write(&wb)?;
+                    wb.clear();
+                }
             }
 
             if !it.next()? {
                 break;
             }
         }
+
         if wb.count() > 0 {
             db.write(&wb)?;
+        }
+        info!("scan delete {} keys", count);
+        if let Some(mut w) = writer {
+            let f = w.finish()?;
+            let mut ingest_opt = IngestExternalFileOptions::new();
+            ingest_opt.move_files(true);
+            db.ingest_external_file_cf(handle, &ingest_opt, &[f.file_path().to_str().unwrap()])?;
         }
     }
 

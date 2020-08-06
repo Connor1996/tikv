@@ -389,20 +389,20 @@ impl<E: Engine> GCRunner<E> {
         if self.cfg.enable_delete {
 
             // Then, delete all remaining keys in the range.
-            let cleanup_all_start_time = Instant::now();
-            for cf in cfs {
-                // TODO: set use_delete_range with config here.
-                delete_all_in_range_cf(local_storage, cf, &start_data_key, &end_data_key, false, self.cfg.delete_batch, self.cfg.delete_ingest)
-                    .map_err(|e| {
-                        let e: Error = box_err!(e);
-                        warn!(
-                            "unsafe destroy range failed at delete_all_in_range_cf"; "err" => ?e
-                        );
-                        e
-                    })?;
-            }
+            // let cleanup_all_start_time = Instant::now();
+            // for cf in cfs {
+            //     // TODO: set use_delete_range with config here.
+            //     delete_all_in_range_cf(local_storage, cf, &start_data_key, &end_data_key, false, self.cfg.delete_batch, self.cfg.delete_ingest)
+            //         .map_err(|e| {
+            //             let e: Error = box_err!(e);
+            //             warn!(
+            //                 "unsafe destroy range failed at delete_all_in_range_cf"; "err" => ?e
+            //             );
+            //             e
+            //         })?;
+            // }
 
-            let cleanup_all_time_cost = cleanup_all_start_time.elapsed();
+            // let cleanup_all_time_cost = cleanup_all_start_time.elapsed();
 
             if let Some(router) = self.raft_store_router.as_ref() {
                 router
@@ -421,10 +421,10 @@ impl<E: Engine> GCRunner<E> {
                 warn!("unsafe destroy range: can't clear region size information: raft_store_router not set");
             }
 
-            info!(
-                "unsafe destroy range finished cleaning up all";
-                "start_key" => %start_key, "end_key" => %end_key, "cost_time" => ?cleanup_all_time_cost,
-            );
+            // info!(
+            //     "unsafe destroy range finished cleaning up all";
+            //     "start_key" => %start_key, "end_key" => %end_key, "cost_time" => ?cleanup_all_time_cost,
+            // );
         }
         Ok(())
     }

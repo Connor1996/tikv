@@ -64,6 +64,10 @@ pub enum Task {
         start_key: Vec<u8>,
         end_key: Vec<u8>,
     },
+    Clean {
+        start_key: Vec<u8>,
+        end_key: Vec<u8>,
+    }
 }
 
 impl Task {
@@ -92,6 +96,7 @@ impl Display for Task {
                 hex::encode_upper(start_key),
                 hex::encode_upper(end_key)
             ),
+            Task::Clean { .. } => write!(f, "clean range"),
         }
     }
 }
@@ -475,14 +480,21 @@ impl<R: CasualRouter> SnapContext<R> {
         let now = time::Instant::now();
         let mut cleaned_range_keys = vec![];
         {
-            let use_delete_files = true;
+            let mut use_delete_files = true;
             for (region_id, start_key, end_key) in self.pending_delete_ranges.timeout_ranges(now) {
+                if region_id == 0 {
+                    info!(
+                        "do range clean";
+                    );
+                    use_delete_files = false;
+                }
                 self.cleanup_range(
                     region_id,
                     start_key.as_slice(),
                     end_key.as_slice(),
                     use_delete_files,
                 );
+                use_delete_files = true;
                 cleaned_range_keys.push(start_key);
                 let elapsed = now.elapsed();
                 if elapsed >= CLEANUP_MAX_DURATION {
@@ -632,6 +644,19 @@ where
                 {
                     self.ctx.cleanup_range(
                         region_id, &start_key, &end_key, false, /* use_delete_files */
+                    );
+                }
+            }
+            Task::Clean {
+                start_key,
+                end_key,
+            } => {
+                if !self
+                    .ctx
+                    .insert_pending_delete_range(0, &start_key, &end_key)
+                {
+                    self.ctx.cleanup_range(
+                        0, &start_key, &end_key, false, /* use_delete_files */
                     );
                 }
             }

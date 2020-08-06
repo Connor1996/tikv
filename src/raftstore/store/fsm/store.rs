@@ -1991,7 +1991,7 @@ impl<'a, T: Transport, C: PdClient> StoreFsmDelegate<'a, T, C> {
             let meta = self.ctx.store_meta.lock().unwrap();
             for (_, region_id) in meta
                 .region_ranges
-                .range((Excluded(start_key), Included(end_key)))
+                .range((Excluded(start_key.clone()), Included(end_key.clone())))
             {
                 regions.push(*region_id);
             }
@@ -2002,6 +2002,14 @@ impl<'a, T: Transport, C: PdClient> StoreFsmDelegate<'a, T, C> {
                 PeerMsg::CasualMessage(CasualMessage::ClearRegionSize),
             );
         }
+
+        self.ctx.region_scheduler.schedule(
+            RegionTask::Clean{
+                start_key,
+                end_key,
+            }
+        ).unwrap();
+        ()
     }
 
     fn on_store_unreachable(&mut self, store_id: u64) {
