@@ -15,7 +15,7 @@ use std::time::Duration;
 use std::{cmp, usize};
 
 use batch_system::{BasicMailbox, BatchRouter, BatchSystem, Fsm, HandlerBuilder, PollHandler};
-use crossbeam::channel::{TryRecvError, SendError, TrySendError};
+use crossbeam::channel::{SendError, TryRecvError, TrySendError};
 use engine_rocks::{PerfContext, PerfLevel};
 use engine_rocks::{RocksEngine, RocksSnapshot};
 use engine_traits::{KvEngine, Snapshot, WriteBatch, WriteBatchVecExt};
@@ -43,7 +43,7 @@ use crate::store::peer_storage::{
     self, write_initial_apply_state, write_peer_state, ENTRY_MEM_SIZE,
 };
 use crate::store::util::{check_region_epoch, compare_region_epoch};
-use crate::store::util::{KeysInfoFormatter, PerfContextStatistics};
+use crate::store::util::{KeysInfoFormatter, PerfContextStatistics, WindowSmoother};
 
 use crate::observe_perf_context_type;
 use crate::report_perf_context;
@@ -54,7 +54,7 @@ use sst_importer::SSTImporter;
 use tikv_util::config::{Tracker, VersionTrack};
 use tikv_util::escape;
 use tikv_util::mpsc::{loose_bounded, LooseBoundedSender, Receiver};
-use tikv_util::time::{duration_to_sec, Instant};
+use tikv_util::time::{duration_to_nanos, duration_to_sec, Instant};
 use tikv_util::worker::Scheduler;
 use tikv_util::Either;
 use tikv_util::MustConsumeVec;
@@ -375,6 +375,10 @@ where
 
     // TxnExtra collected from applied cmds.
     txn_extras: MustConsumeVec<TxnExtra>,
+
+    loop_duration_smoother: Arc<WindowSmoother>,
+    wait_duration_smoother: Arc<WindowSmoother>,
+    busy_mark: Arc<AtomicBool>,
 }
 
 impl<E, W> ApplyContext<E, W>
@@ -391,6 +395,9 @@ where
         router: ApplyRouter,
         notifier: Notifier<E::Snapshot>,
         cfg: &Config,
+        loop_duration_smoother: Arc<WindowSmoother>,
+        wait_duration_smoother: Arc<WindowSmoother>,
+        busy_mark: Arc<AtomicBool>,
     ) -> ApplyContext<E, W> {
         ApplyContext::<E, W> {
             tag,
@@ -415,6 +422,9 @@ where
             perf_context_statistics: PerfContextStatistics::new(cfg.perf_level),
             yield_duration: cfg.apply_yield_duration.0,
             txn_extras: MustConsumeVec::new("extra data from txn"),
+            loop_duration_smoother,
+            wait_duration_smoother,
+            busy_mark,
         }
     }
 
@@ -3037,8 +3047,12 @@ where
             }
         }
         if let Some(timer) = channel_timer {
-            let elapsed = duration_to_sec(timer.elapsed());
-            APPLY_TASK_WAIT_TIME_HISTOGRAM.observe(elapsed);
+            let elapsed = timer.elapsed();
+            APPLY_TASK_WAIT_TIME_HISTOGRAM.observe(duration_to_sec(elapsed));
+
+            apply_ctx
+                .wait_duration_smoother
+                .insert(duration_to_nanos(elapsed));
         }
     }
 }
@@ -3102,6 +3116,8 @@ where
     apply_ctx: ApplyContext<E, W>,
     messages_per_tick: usize,
     cfg_tracker: Tracker<Config>,
+
+    timer: Instant,
 }
 
 impl<E, W> PollHandler<ApplyFsm<E>, ControlFsm> for ApplyPoller<E, W>
@@ -3110,6 +3126,7 @@ where
     W: WriteBatch + WriteBatchVecExt<E>,
 {
     fn begin(&mut self, _batch_size: usize) {
+        self.timer = Instant::now_coarse();
         if let Some(incoming) = self.cfg_tracker.any_new() {
             match Ord::cmp(&incoming.messages_per_tick, &self.messages_per_tick) {
                 CmpOrdering::Greater => {
@@ -3170,12 +3187,12 @@ where
                 }
             }
         }
-        if let Some(mailbox) = normal.mailbox.as_mut() {
-            if mailbox.is_busy() {
-                mailbox.reset_busy();
-                self.apply_ctx.notifier.notify(normal.delegate.region_id(), PeerMsg::BusyResolved);
-            }
-        }
+        // if let Some(mailbox) = normal.mailbox.as_mut() {
+        //     if mailbox.is_busy() {
+        //         mailbox.reset_busy();
+        //         self.apply_ctx.notifier.notify(normal.delegate.region_id(), PeerMsg::BusyResolved);
+        //     }
+        // }
         normal.handle_tasks(&mut self.apply_ctx, &mut self.msg_buf);
         if normal.delegate.wait_merge_state.is_some() {
             // Check it again immediately as catching up logs can be very fast.
@@ -3194,6 +3211,29 @@ where
                 fsm.delegate.last_sync_apply_index = fsm.delegate.apply_state.get_applied_index();
             }
         }
+
+        self.apply_ctx
+            .loop_duration_smoother
+            .insert(duration_to_nanos(self.timer.elapsed()));
+
+        let wait_avg = self.apply_ctx.wait_duration_smoother.avg();
+        let loop_avg = self.apply_ctx.loop_duration_smoother.avg();
+        LOOP_DURATION_AVG_VEC
+            .with_label_values(&["apply"])
+            .set(loop_avg as i64);
+        WAIT_DURATION_AVG_VEC
+            .with_label_values(&["apply"])
+            .set(wait_avg as i64);
+        if self.apply_ctx.busy_mark.load(Ordering::SeqCst) == false {
+            if wait_avg > loop_avg * 2.0 {
+                self.apply_ctx.busy_mark.store(true, Ordering::SeqCst);
+                BUSY_MARK_COUNTER.apply.inc();
+            }
+        } else {
+            if wait_avg < loop_avg * 1.5 {
+                self.apply_ctx.busy_mark.store(false, Ordering::SeqCst);
+            }
+        }
     }
 }
 
@@ -3206,6 +3246,9 @@ pub struct Builder<W: WriteBatch + WriteBatchVecExt<RocksEngine>> {
     engine: RocksEngine,
     sender: Notifier<RocksSnapshot>,
     router: ApplyRouter,
+    loop_duration_smoother: Arc<WindowSmoother>,
+    wait_duration_smoother: Arc<WindowSmoother>,
+    busy_mark: Arc<AtomicBool>,
     _phantom: PhantomData<W>,
 }
 
@@ -3214,6 +3257,7 @@ impl<W: WriteBatch + WriteBatchVecExt<RocksEngine>> Builder<W> {
         builder: &RaftPollerBuilder<T, C>,
         sender: Notifier<RocksSnapshot>,
         router: ApplyRouter,
+        busy_mark: Arc<AtomicBool>,
     ) -> Builder<W> {
         Builder::<W> {
             tag: format!("[store {}]", builder.store.get_id()),
@@ -3222,6 +3266,9 @@ impl<W: WriteBatch + WriteBatchVecExt<RocksEngine>> Builder<W> {
             importer: builder.importer.clone(),
             region_scheduler: builder.region_scheduler.clone(),
             engine: builder.engines.kv.clone(),
+            loop_duration_smoother: Arc::new(WindowSmoother::new(256)),
+            wait_duration_smoother: Arc::new(WindowSmoother::new(1024)),
+            busy_mark,
             _phantom: PhantomData,
             sender,
             router,
@@ -3247,9 +3294,13 @@ impl<W: WriteBatch + WriteBatchVecExt<RocksEngine>>
                 self.router.clone(),
                 self.sender.clone(),
                 &cfg,
+                self.loop_duration_smoother.clone(),
+                self.wait_duration_smoother.clone(),
+                self.busy_mark.clone(),
             ),
             messages_per_tick: cfg.messages_per_tick,
             cfg_tracker: self.cfg.clone().tracker(self.tag.clone()),
+            timer: Instant::now_coarse(),
         }
     }
 }
@@ -3281,8 +3332,8 @@ impl ApplyRouter {
             Either::Left(Err(TrySendError::Full(msg))) => {
                 if force {
                     match self.force_send(region_id, msg) {
-                       Ok(()) => return true,
-                       Err(SendError(msg)) => msg,
+                        Ok(()) => return true,
+                        Err(SendError(msg)) => msg,
                     }
                 } else {
                     return false;
@@ -3298,15 +3349,14 @@ impl ApplyRouter {
                 let (sender, apply_fsm) = ApplyFsm::from_registration(reg);
                 let mailbox = BasicMailbox::new(sender, None, apply_fsm);
                 self.register(region_id, mailbox);
-            },
+            }
             Msg::Apply { mut apply, .. } => {
                 info!(
                     "target region is not found, drop proposals";
                     "region_id" => region_id
                 );
                 for p in apply.cbs.drain(..) {
-                    let cmd =
-                        PendingCmd::<RocksSnapshot>::new(p.index, p.term, p.cb, p.txn_extra);
+                    let cmd = PendingCmd::<RocksSnapshot>::new(p.index, p.term, p.cb, p.txn_extra);
                     notify_region_removed(apply.region_id, apply.peer_id, cmd);
                 }
             }
@@ -3349,7 +3399,7 @@ impl ApplyRouter {
                 cb.invoke_read(resp);
             }
             #[cfg(any(test, feature = "testexport"))]
-            Msg::Validate(_, _) => {},
+            Msg::Validate(_, _) => {}
         };
         true
     }

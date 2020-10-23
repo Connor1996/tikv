@@ -1535,8 +1535,10 @@ impl Peer {
                     term,
                     cbs,
                 );
-                if ctx.apply_router
-                    .schedule_task(self.region_id, ApplyTask::apply(apply), false) {
+                if ctx
+                    .apply_router
+                    .schedule_task(self.region_id, ApplyTask::apply(apply), false)
+                {
                     self.last_applying_idx = committed_index;
                     if self.last_applying_idx >= self.last_urgent_proposal_idx {
                         // Urgent requests are flushed, make it lazy again.
@@ -1544,8 +1546,8 @@ impl Peer {
                         self.last_urgent_proposal_idx = u64::MAX;
                     }
                 } else {
-                    PIPELINE_APPLY_BUSY_COUNTER.inc();
-                    self.apply_busy = true;
+                    // PIPELINE_APPLY_BUSY_COUNTER.inc();
+                    // self.apply_busy = true;
                 }
             }
             fail_point!("after_send_to_apply_1003", self.peer_id() == 1003, |_| {});
@@ -1556,8 +1558,11 @@ impl Peer {
             if let Some(gen_task) = self.mut_store().take_gen_snap_task() {
                 self.pending_request_snapshot_count
                     .fetch_add(1, Ordering::SeqCst);
-                ctx.apply_router
-                    .schedule_task(self.region_id, ApplyTask::Snapshot(gen_task), false);
+                ctx.apply_router.schedule_task(
+                    self.region_id,
+                    ApplyTask::Snapshot(gen_task),
+                    false,
+                );
             }
         }
 

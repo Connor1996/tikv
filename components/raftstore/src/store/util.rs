@@ -1,7 +1,8 @@
 // Copyright 2016 TiKV Project Authors. Licensed under Apache-2.0.
 
+use std::cell::UnsafeCell;
 use std::option::Option;
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::{fmt, u64};
 
@@ -18,6 +19,42 @@ use time::{Duration, Timespec};
 use super::peer_storage;
 use crate::{Error, Result};
 use tikv_util::Either;
+
+pub struct WindowSmoother {
+    cursor: AtomicUsize,
+    slots: UnsafeCell<Vec<u64>>,
+    sum: AtomicU64,
+    cap: usize,
+}
+unsafe impl Send for WindowSmoother {}
+unsafe impl Sync for WindowSmoother {}
+
+impl WindowSmoother {
+    pub fn new(cap: usize) -> Self {
+        WindowSmoother {
+            cursor: AtomicUsize::new(0),
+            slots: UnsafeCell::new(vec![0; cap]),
+            sum: AtomicU64::new(0),
+            cap,
+        }
+    }
+
+    pub fn insert(&self, data: u64) {
+        let idx = self
+            .cursor
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
+                Some((x + 1) % self.cap)
+            })
+            .unwrap();
+        let datas = unsafe { &mut *self.slots.get() };
+        self.sum.fetch_add(data - datas[idx], Ordering::SeqCst);
+        datas[idx] = data;
+    }
+
+    pub fn avg(&self) -> f64 {
+        self.sum.load(Ordering::SeqCst) as f64 / self.cap as f64
+    }
+}
 
 pub fn find_peer(region: &metapb::Region, store_id: u64) -> Option<&metapb::Peer> {
     region
@@ -485,7 +522,7 @@ pub struct RemoteLease {
 
 impl RemoteLease {
     pub fn inspect(&self, ts: Option<Timespec>) -> LeaseState {
-        let expired_time = self.expired_time.load(AtomicOrdering::Acquire);
+        let expired_time = self.expired_time.load(Ordering::Acquire);
         if ts.unwrap_or_else(monotonic_raw_now) < u64_to_timespec(expired_time) {
             LeaseState::Valid
         } else {
@@ -495,11 +532,11 @@ impl RemoteLease {
 
     fn renew(&self, bound: Timespec) {
         self.expired_time
-            .store(timespec_to_u64(bound), AtomicOrdering::Release);
+            .store(timespec_to_u64(bound), Ordering::Release);
     }
 
     fn expire(&self) {
-        self.expired_time.store(0, AtomicOrdering::Release);
+        self.expired_time.store(0, Ordering::Release);
     }
 
     pub fn term(&self) -> u64 {
@@ -512,7 +549,7 @@ impl fmt::Debug for RemoteLease {
         fmt.debug_struct("RemoteLease")
             .field(
                 "expired_time",
-                &u64_to_timespec(self.expired_time.load(AtomicOrdering::Relaxed)),
+                &u64_to_timespec(self.expired_time.load(Ordering::Relaxed)),
             )
             .field("term", &self.term)
             .finish()

@@ -129,6 +129,10 @@ make_auto_flush_static_metric! {
         consistency_check,
         cleanup_import_sst,
     }
+    pub label_enum BatchSystemType {
+        raft,
+        apply,
+    }
 
     pub struct RaftEventDuration : LocalHistogram {
         "type" => RaftEventDurationType
@@ -176,19 +180,33 @@ make_auto_flush_static_metric! {
     pub struct PerfContextTimeDuration : LocalHistogram {
         "type" => PerfContextType
     }
+    pub struct BatchSystemVec : LocalIntCounter {
+        "type" => BatchSystemType
+    }
 }
 
 lazy_static! {
-    pub static ref PIPELINE_PROPOSE_BUSY_COUNTER: IntGauge = register_int_gauge!(
-        "pipeline_propose_busy_counter",
-        "Current worker pending + running tasks."
-    )
-    .unwrap();
-    pub static ref PIPELINE_APPLY_BUSY_COUNTER: IntGauge = register_int_gauge!(
-        "pipeline_apply_busy_counter",
-        "Current worker pending + running tasks."
-    )
-    .unwrap();
+    pub static ref BUSY_MARK_COUNTER_VEC: IntCounterVec =
+        register_int_counter_vec!(
+            "tikv_raftstore_busy_mark_counter",
+            "busy_mark",
+            &["type"]
+        ).unwrap();
+    pub static ref BUSY_MARK_COUNTER: BatchSystemVec =
+        auto_flush_from!(BUSY_MARK_COUNTER_VEC, BatchSystemVec);
+
+    pub static ref LOOP_DURATION_AVG_VEC: IntGaugeVec =
+        register_int_gauge_vec!(
+            "tikv_raftstore_loop_duration_avg",
+            "loop_duration",
+            &["type"]
+        ).unwrap();
+    pub static ref WAIT_DURATION_AVG_VEC: IntGaugeVec =
+        register_int_gauge_vec!(
+            "tikv_raftstore_wait_duration_avg",
+            "wait_duration",
+            &["type"]
+        ).unwrap();
 
     pub static ref PEER_PROPOSAL_COUNTER_VEC: IntCounterVec =
         register_int_counter_vec!(

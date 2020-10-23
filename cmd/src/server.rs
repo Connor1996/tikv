@@ -37,6 +37,7 @@ use std::{
     fs::{self, File},
     net::SocketAddr,
     path::{Path, PathBuf},
+    sync::atomic::AtomicBool,
     sync::{Arc, Mutex},
     thread::JoinHandle,
 };
@@ -468,6 +469,8 @@ impl TiKVServer {
             storage_read_pools.handle()
         };
 
+        let raft_busy_mark = Arc::new(AtomicBool::new(false));
+        let apply_busy_mark = Arc::new(AtomicBool::new(false));
         let storage = create_raft_storage(
             engines.engine.clone(),
             &self.config.storage,
@@ -475,6 +478,8 @@ impl TiKVServer {
             lock_mgr.clone(),
             self.pd_client.clone(),
             self.config.pessimistic_txn.pipelined,
+            raft_busy_mark.clone(),
+            apply_busy_mark.clone(),
         )
         .unwrap_or_else(|e| fatal!("failed to create raft storage: {}", e));
 
@@ -583,6 +588,8 @@ impl TiKVServer {
             importer.clone(),
             split_check_worker,
             auto_split_controller,
+            raft_busy_mark,
+            apply_busy_mark,
         )
         .unwrap_or_else(|e| fatal!("failed to start node: {}", e));
 

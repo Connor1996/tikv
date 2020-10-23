@@ -1,5 +1,6 @@
 // Copyright 2016 TiKV Project Authors. Licensed under Apache-2.0.
 
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -40,6 +41,8 @@ pub fn create_raft_storage<S, P: PdClient + 'static>(
     lock_mgr: LockManager,
     pd_client: Arc<P>,
     pipelined_pessimistic_lock: bool,
+    raft_busy_mark: Arc<AtomicBool>,
+    apply_busy_mark: Arc<AtomicBool>,
 ) -> Result<Storage<RaftKv<S>, LockManager, P>>
 where
     S: RaftStoreRouter<RocksSnapshot> + 'static,
@@ -51,6 +54,8 @@ where
         lock_mgr,
         pd_client,
         pipelined_pessimistic_lock,
+        raft_busy_mark,
+        apply_busy_mark,
     )?;
     Ok(store)
 }
@@ -142,6 +147,8 @@ where
         importer: Arc<SSTImporter>,
         split_check_worker: Worker<SplitCheckTask>,
         auto_split_controller: AutoSplitController,
+        raft_busy_mark: Arc<AtomicBool>,
+        apply_busy_mark: Arc<AtomicBool>,
     ) -> Result<()>
     where
         T: Transport + 'static,
@@ -183,6 +190,8 @@ where
             importer,
             split_check_worker,
             auto_split_controller,
+            raft_busy_mark,
+            apply_busy_mark,
         )?;
 
         Ok(())
@@ -377,6 +386,8 @@ where
         importer: Arc<SSTImporter>,
         split_check_worker: Worker<SplitCheckTask>,
         auto_split_controller: AutoSplitController,
+        raft_busy_mark: Arc<AtomicBool>,
+        apply_busy_mark: Arc<AtomicBool>,
     ) -> Result<()>
     where
         T: Transport + 'static,
@@ -404,6 +415,8 @@ where
             split_check_worker,
             auto_split_controller,
             self.state.clone(),
+            raft_busy_mark,
+            apply_busy_mark,
         )?;
         Ok(())
     }

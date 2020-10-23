@@ -22,7 +22,7 @@
 
 use futures::future;
 use parking_lot::Mutex;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::u64;
 
@@ -161,6 +161,9 @@ struct SchedulerInner<L: LockManager, P: PdClient + 'static> {
     pd_client: Arc<P>,
 
     pipelined_pessimistic_lock: bool,
+
+    raft_busy_mark: Arc<AtomicBool>,
+    apply_busy_mark: Arc<AtomicBool>,
 }
 
 #[inline]
@@ -223,7 +226,9 @@ impl<L: LockManager, P: PdClient + 'static> SchedulerInner<L, P> {
 
     fn too_busy(&self) -> bool {
         fail_point!("txn_scheduler_busy", |_| true);
-        self.running_write_bytes.load(Ordering::Acquire) >= self.sched_pending_write_threshold
+        (self.raft_busy_mark.load(Ordering::SeqCst) || self.apply_busy_mark.load(Ordering::SeqCst))
+            && self.running_write_bytes.load(Ordering::Acquire)
+                >= self.sched_pending_write_threshold
     }
 
     /// Tries to acquire all the required latches for a command.
@@ -259,6 +264,8 @@ impl<E: Engine, L: LockManager, P: PdClient + 'static> Scheduler<E, L, P> {
         worker_pool_size: usize,
         sched_pending_write_threshold: usize,
         pipelined_pessimistic_lock: bool,
+        raft_busy_mark: Arc<AtomicBool>,
+        apply_busy_mark: Arc<AtomicBool>,
     ) -> Self {
         // Add 2 logs records how long is need to initialize TASKS_SLOTS_NUM * 2048000 `Mutex`es.
         // In a 3.5G Hz machine it needs 1.3s, which is a notable duration during start-up.
@@ -283,6 +290,8 @@ impl<E: Engine, L: LockManager, P: PdClient + 'static> Scheduler<E, L, P> {
             lock_mgr,
             pd_client,
             pipelined_pessimistic_lock,
+            raft_busy_mark,
+            apply_busy_mark,
         });
 
         slow_log!(t.elapsed(), "initialized the transaction scheduler");
@@ -321,6 +330,7 @@ impl<E: Engine, L: LockManager, P: PdClient + 'static> Scheduler<E, L, P> {
         let task = Task::new(cid, cmd);
         // TODO: enqueue_task should return an reference of the tctx.
         self.inner.enqueue_task(task, callback);
+
         if self.inner.acquire_lock(cid) {
             self.get_snapshot(cid);
         }

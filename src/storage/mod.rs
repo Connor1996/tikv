@@ -50,7 +50,7 @@ use kvproto::kvrpcpb::{CommandPri, Context, GetRequest, KeyRange, RawGetRequest}
 use pd_client::{DummyPdClient, PdClient};
 use raftstore::store::util::build_key_range;
 use rand::prelude::*;
-use std::sync::{atomic, Arc};
+use std::sync::{atomic, atomic::AtomicBool, Arc};
 use tikv_util::time::Instant;
 use tikv_util::time::ThreadReadId;
 use txn_types::{Key, KvPair, TimeStamp, TsSet, Value};
@@ -156,6 +156,8 @@ impl<E: Engine, L: LockManager, P: PdClient + 'static> Storage<E, L, P> {
         lock_mgr: L,
         pd_client: Arc<P>,
         pipelined_pessimistic_lock: bool,
+        raft_busy_mark: Arc<AtomicBool>,
+        apply_busy_mark: Arc<AtomicBool>,
     ) -> Result<Self> {
         let sched = TxnScheduler::new(
             engine.clone(),
@@ -165,6 +167,8 @@ impl<E: Engine, L: LockManager, P: PdClient + 'static> Storage<E, L, P> {
             config.scheduler_worker_pool_size,
             config.scheduler_pending_write_threshold.0 as usize,
             pipelined_pessimistic_lock,
+            raft_busy_mark,
+            apply_busy_mark,
         );
 
         info!("Storage started.");
@@ -1326,6 +1330,8 @@ impl<E: Engine, L: LockManager> TestStorageBuilder<E, L> {
             self.lock_mgr,
             Arc::new(DummyPdClient::new()),
             self.pipelined_pessimistic_lock,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
         )
     }
 }

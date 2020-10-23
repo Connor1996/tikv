@@ -3,9 +3,9 @@
 use crate::fsm::{Fsm, FsmScheduler, FsmState};
 use crossbeam::channel::{SendError, TrySendError};
 use std::borrow::Cow;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tikv_util::mpsc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 /// A basic mailbox.
 ///
@@ -17,9 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// will drive the fsm to poll for messages.
 pub struct BasicMailbox<Owner: Fsm> {
     sender: mpsc::LooseBoundedSender<Owner::Message>,
-    command_sender: Option<mpsc::Sender<Owner::Message>>, // bounded channel
     state: Arc<FsmState<Owner>>,
-    busy: Arc<AtomicBool>,
 }
 
 impl<Owner: Fsm> BasicMailbox<Owner> {
@@ -31,19 +29,12 @@ impl<Owner: Fsm> BasicMailbox<Owner> {
     ) -> BasicMailbox<Owner> {
         BasicMailbox {
             sender,
-            command_sender,
             state: Arc::new(FsmState::new(fsm)),
-            busy: Arc::new(AtomicBool::default()),
         }
     }
 
     pub(crate) fn is_connected(&self) -> bool {
         self.sender.is_sender_connected()
-            && self
-                .command_sender
-                .as_ref()
-                .map(|s| s.is_sender_connected())
-                .unwrap_or(true)
     }
 
     pub(crate) fn release(&self, fsm: Box<Owner>) {
@@ -56,32 +47,12 @@ impl<Owner: Fsm> BasicMailbox<Owner> {
 
     #[inline]
     pub fn len(&self) -> usize {
-        self.sender.len() + self.command_sender.as_ref().map(|s| s.len()).unwrap_or(0)
+        self.sender.len()
     }
 
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.sender.is_empty()
-            && self
-                .command_sender
-                .as_ref()
-                .map(|s| s.is_empty())
-                .unwrap_or(true)
-    }
-
-    #[inline]
-    pub fn is_busy(&self) -> bool {
-        self.busy.load(Ordering::SeqCst)
-    }
-
-    #[inline]
-    pub fn set_busy(&self) {
-        self.busy.store(true, Ordering::SeqCst)
-    }
-
-    #[inline]
-    pub fn reset_busy(&mut self) {
-        self.busy.store(false, Ordering::SeqCst)
     }
 
     /// Force sending a message despite the capacity limit on channel.
@@ -105,23 +76,7 @@ impl<Owner: Fsm> BasicMailbox<Owner> {
         msg: Owner::Message,
         scheduler: &S,
     ) -> Result<(), TrySendError<Owner::Message>> {
-        match self.sender.try_send(msg) {
-            e @ Err(TrySendError::Full(_)) => {
-                self.set_busy();
-                return e;
-            },
-            o @ _ => o?,
-        }
-        self.state.notify(scheduler, Cow::Borrowed(self));
-        Ok(())
-    }
-
-    pub fn block_send<S: FsmScheduler<Fsm = Owner>>(
-        &self,
-        msg: Owner::Message,
-        scheduler: &S,
-    ) -> Result<(), SendError<Owner::Message>> {
-        self.command_sender.as_ref().unwrap().send(msg)?;
+        self.sender.try_send(msg)?;
         self.state.notify(scheduler, Cow::Borrowed(self));
         Ok(())
     }
@@ -130,7 +85,6 @@ impl<Owner: Fsm> BasicMailbox<Owner> {
     #[inline]
     pub(crate) fn close(&self) {
         self.sender.close_sender();
-        self.command_sender.as_ref().unwrap().close_sender();
         self.state.clear();
     }
 }
@@ -140,9 +94,7 @@ impl<Owner: Fsm> Clone for BasicMailbox<Owner> {
     fn clone(&self) -> BasicMailbox<Owner> {
         BasicMailbox {
             sender: self.sender.clone(),
-            command_sender: self.command_sender.clone(),
             state: self.state.clone(),
-            busy: self.busy.clone(),
         }
     }
 }

@@ -3,6 +3,7 @@
 use std::borrow::Cow;
 use std::collections::Bound::{Excluded, Included, Unbounded};
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{cmp, u64};
 
@@ -30,7 +31,7 @@ use raft::eraftpb::{ConfChangeType, MessageType};
 use raft::{self, SnapshotStatus, INVALID_INDEX, NO_LIMIT};
 use raft::{Ready, StateRole};
 use tikv_util::mpsc::{self, LooseBoundedSender, Receiver, Sender};
-use tikv_util::time::duration_to_sec;
+use tikv_util::time::{duration_to_nanos, duration_to_sec};
 use tikv_util::worker::{Scheduler, Stopped};
 use tikv_util::{escape, is_zero_duration};
 use txn_types::TxnExtra;
@@ -433,11 +434,16 @@ impl<'a, T: Transport, C: PdClient> PeerFsmDelegate<'a, T, C> {
                     }
                 }
                 PeerMsg::RaftCommand(cmd) => {
+                    let elapsed = cmd.send_time.elapsed();
                     self.ctx
                         .raft_metrics
                         .propose
                         .request_wait_time
-                        .observe(duration_to_sec(cmd.send_time.elapsed()) as f64);
+                        .observe(duration_to_sec(elapsed) as f64);
+                    self.ctx
+                        .wait_duration_smoother
+                        .insert(duration_to_nanos(elapsed));
+
                     let req_size = cmd.request.compute_size();
                     if self.fsm.batch_req_builder.can_batch(&cmd.request, req_size) {
                         self.fsm.batch_req_builder.add(cmd, req_size);
@@ -2359,9 +2365,11 @@ impl<'a, T: Transport, C: PdClient> PeerFsmDelegate<'a, T, C> {
                 catch_up_logs.merge.clear_entries();
                 // Send CatchUpLogs back to destroy source apply fsm,
                 // then it will send `Noop` to trigger target apply fsm.
-                self.ctx
-                    .apply_router
-                    .schedule_task(region_id, ApplyTask::LogsUpToDate(catch_up_logs), true);
+                self.ctx.apply_router.schedule_task(
+                    region_id,
+                    ApplyTask::LogsUpToDate(catch_up_logs),
+                    true,
+                );
                 return;
             }
         }

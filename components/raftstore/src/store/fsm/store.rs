@@ -1,7 +1,7 @@
 // Copyright 2016 TiKV Project Authors. Licensed under Apache-2.0.
 
 use batch_system::{BasicMailbox, BatchRouter, BatchSystem, Fsm, HandlerBuilder, PollHandler};
-use crossbeam::channel::{SendError, TryRecvError, TrySendError};
+use crossbeam::channel::{TryRecvError, TrySendError};
 use engine_rocks::{PerfContext, PerfLevel};
 use engine_rocks::{
     RocksCompactionJobInfo, RocksEngine, RocksSnapshot, RocksWriteBatch, RocksWriteBatchVec,
@@ -24,7 +24,7 @@ use std::cmp::{Ord, Ordering as CmpOrdering};
 use std::collections::BTreeMap;
 use std::collections::Bound::{Excluded, Included, Unbounded};
 use std::ops::Deref;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::{mem, thread, u64};
@@ -50,7 +50,7 @@ use crate::store::local_metrics::RaftMetrics;
 use crate::store::metrics::*;
 use crate::store::peer_storage::{self, HandleRaftReadyContext, InvokeContext};
 use crate::store::transport::Transport;
-use crate::store::util::{is_initial_msg, PerfContextStatistics};
+use crate::store::util::{is_initial_msg, PerfContextStatistics, WindowSmoother};
 use crate::store::worker::{
     AutoSplitController, CleanupRunner, CleanupSSTRunner, CleanupSSTTask, CleanupTask,
     CompactRunner, CompactTask, ConsistencyCheckRunner, ConsistencyCheckTask, PdRunner,
@@ -70,7 +70,7 @@ use sst_importer::SSTImporter;
 use tikv_util::collections::HashMap;
 use tikv_util::config::{Tracker, VersionTrack};
 use tikv_util::mpsc::{self, LooseBoundedSender, Receiver};
-use tikv_util::time::{duration_to_sec, Instant as TiInstant};
+use tikv_util::time::{duration_to_nanos, duration_to_sec, Instant as TiInstant};
 use tikv_util::timer::SteadyTimer;
 use tikv_util::worker::{FutureScheduler, FutureWorker, Scheduler, Worker};
 use tikv_util::{is_zero_duration, sys as sys_util, Either, RingQueue};
@@ -206,9 +206,12 @@ impl<S: Snapshot> RaftRouter<S> {
         cmd: RaftCommand<S>,
     ) -> std::result::Result<(), TrySendError<RaftCommand<S>>> {
         let region_id = cmd.request.get_header().get_region_id();
-        match self.block_send(region_id, PeerMsg::RaftCommand(cmd)) {
+        match self.send(region_id, PeerMsg::RaftCommand(cmd)) {
             Ok(()) => Ok(()),
-            Err(SendError(PeerMsg::RaftCommand(cmd))) => Err(TrySendError::Disconnected(cmd)),
+            Err(TrySendError::Full(PeerMsg::RaftCommand(cmd))) => Err(TrySendError::Full(cmd)),
+            Err(TrySendError::Disconnected(PeerMsg::RaftCommand(cmd))) => {
+                Err(TrySendError::Disconnected(cmd))
+            }
             _ => unreachable!(),
         }
     }
@@ -267,6 +270,9 @@ pub struct PollContext<T, C: 'static> {
     pub current_time: Option<Timespec>,
     pub perf_context_statistics: PerfContextStatistics,
     pub node_start_time: Option<Instant>,
+    pub loop_duration_smoother: Arc<WindowSmoother>,
+    pub wait_duration_smoother: Arc<WindowSmoother>,
+    pub busy_mark: Arc<AtomicBool>,
 }
 
 impl<T, C> HandleRaftReadyContext<RocksWriteBatch, RocksWriteBatch> for PollContext<T, C> {
@@ -733,28 +739,28 @@ impl<T: Transport, C: PdClient> PollHandler<PeerFsm<RocksSnapshot>, StoreFsm> fo
                 }
             }
         }
-        let stall = peer.peer.raft_group.raft.raft_log.last_index() - peer.peer.raft_group.raft.raft_log.committed >= self.poll_ctx.cfg.raft_log_gc_count_limit;
-        if !stall {
-            while self.peer_msg_buf.len() < self.messages_per_tick {
-                match peer.command_receiver.try_recv() {
-                    Ok(msg) => {
-                        expected_msg_count = None;
-                        self.peer_msg_buf.push(msg)
-                    }
-                    Err(TryRecvError::Empty) => {
-                        expected_msg_count = Some(0);
-                        break;
-                    }
-                    Err(TryRecvError::Disconnected) => {
-                        peer.stop();
-                        expected_msg_count = Some(0);
-                        break;
-                    }
-                }
-            }
-        } else {
-            PIPELINE_PROPOSE_BUSY_COUNTER.inc();
-        }
+        // let stall = peer.peer.raft_group.raft.raft_log.last_index() - peer.peer.raft_group.raft.raft_log.committed >= self.poll_ctx.cfg.raft_log_gc_count_limit;
+        // if !stall {
+        //     while self.peer_msg_buf.len() < self.messages_per_tick {
+        //         match peer.command_receiver.try_recv() {
+        //             Ok(msg) => {
+        //                 expected_msg_count = None;
+        //                 self.peer_msg_buf.push(msg)
+        //             }
+        //             Err(TryRecvError::Empty) => {
+        //                 expected_msg_count = Some(0);
+        //                 break;
+        //             }
+        //             Err(TryRecvError::Disconnected) => {
+        //                 peer.stop();
+        //                 expected_msg_count = Some(0);
+        //                 break;
+        //             }
+        //         }
+        //     }
+        // } else {
+        //     PIPELINE_PROPOSE_BUSY_COUNTER.inc();
+        // }
         let mut delegate = PeerFsmDelegate::new(peer, &mut self.poll_ctx);
         delegate.handle_msgs(&mut self.peer_msg_buf);
         delegate.collect_ready();
@@ -766,10 +772,33 @@ impl<T: Transport, C: PdClient> PollHandler<PeerFsm<RocksSnapshot>, StoreFsm> fo
             self.handle_raft_ready(peers);
         }
         self.poll_ctx.current_time = None;
+        let elapsed = self.timer.elapsed();
         self.poll_ctx
             .raft_metrics
             .process_ready
-            .observe(duration_to_sec(self.timer.elapsed()) as f64);
+            .observe(duration_to_sec(elapsed) as f64);
+
+        self.poll_ctx
+            .loop_duration_smoother
+            .insert(duration_to_nanos(elapsed));
+        let wait_avg = self.poll_ctx.wait_duration_smoother.avg();
+        let loop_avg = self.poll_ctx.loop_duration_smoother.avg();
+        LOOP_DURATION_AVG_VEC
+            .with_label_values(&["raft"])
+            .set(loop_avg as i64);
+        WAIT_DURATION_AVG_VEC
+            .with_label_values(&["raft"])
+            .set(wait_avg as i64);
+        if self.poll_ctx.busy_mark.load(Ordering::SeqCst) == false {
+            if wait_avg > loop_avg * 2.0 {
+                self.poll_ctx.busy_mark.store(true, Ordering::SeqCst);
+                BUSY_MARK_COUNTER.raft.inc();
+            }
+        } else {
+            if wait_avg < loop_avg * 1.5 {
+                self.poll_ctx.busy_mark.store(false, Ordering::SeqCst);
+            }
+        }
         self.poll_ctx.raft_metrics.flush();
         self.poll_ctx.store_stat.flush();
     }
@@ -804,6 +833,9 @@ pub struct RaftPollerBuilder<T, C> {
     pub engines: KvEngines<RocksEngine, RocksEngine>,
     applying_snap_count: Arc<AtomicUsize>,
     global_replication_state: Arc<Mutex<GlobalReplicationState>>,
+    loop_duration_smoother: Arc<WindowSmoother>,
+    wait_duration_smoother: Arc<WindowSmoother>,
+    busy_mark: Arc<AtomicBool>,
 }
 
 impl<T, C> RaftPollerBuilder<T, C> {
@@ -1017,6 +1049,9 @@ where
             current_time: None,
             perf_context_statistics: PerfContextStatistics::new(self.cfg.value().perf_level),
             node_start_time: Some(Instant::now()),
+            loop_duration_smoother: self.loop_duration_smoother.clone(),
+            wait_duration_smoother: self.wait_duration_smoother.clone(),
+            busy_mark: self.busy_mark.clone(),
         };
         let tag = format!("[store {}]", ctx.store.get_id());
         RaftPoller {
@@ -1077,6 +1112,8 @@ impl RaftBatchSystem {
         split_check_worker: Worker<SplitCheckTask>,
         auto_split_controller: AutoSplitController,
         global_replication_state: Arc<Mutex<GlobalReplicationState>>,
+        raft_busy_mark: Arc<AtomicBool>,
+        apply_busy_mark: Arc<AtomicBool>,
     ) -> Result<()> {
         assert!(self.workers.is_none());
         // TODO: we can get cluster meta regularly too later.
@@ -1121,6 +1158,9 @@ impl RaftBatchSystem {
             store_meta,
             applying_snap_count: Arc::new(AtomicUsize::new(0)),
             future_poller: workers.future_poller.sender().clone(),
+            loop_duration_smoother: Arc::new(WindowSmoother::new(256)),
+            wait_duration_smoother: Arc::new(WindowSmoother::new(1024)),
+            busy_mark: raft_busy_mark,
         };
         let region_peers = builder.init()?;
         let engine = builder.engines.kv.clone();
@@ -1130,6 +1170,7 @@ impl RaftBatchSystem {
                 region_peers,
                 builder,
                 auto_split_controller,
+                apply_busy_mark,
             )?;
         } else {
             self.start_system::<T, C, RocksWriteBatch>(
@@ -1137,6 +1178,7 @@ impl RaftBatchSystem {
                 region_peers,
                 builder,
                 auto_split_controller,
+                apply_busy_mark,
             )?;
         }
         Ok(())
@@ -1152,6 +1194,7 @@ impl RaftBatchSystem {
         region_peers: Vec<SenderFsmPair<RocksSnapshot>>,
         builder: RaftPollerBuilder<T, C>,
         auto_split_controller: AutoSplitController,
+        busy_mark: Arc<AtomicBool>,
     ) -> Result<()> {
         builder.snap_mgr.init()?;
 
@@ -1166,6 +1209,7 @@ impl RaftBatchSystem {
             &builder,
             ApplyNotifier::Router(self.router.clone()),
             self.apply_router.clone(),
+            busy_mark,
         );
         self.apply_system
             .schedule_all(region_peers.iter().map(|pair| pair.2.get_peer()));

@@ -103,7 +103,7 @@ impl<T: RaftStoreRouter<RocksSnapshot>, S: StoreAddrResolver + 'static> Server<T
                 .build(),
         );
         let snap_worker = Worker::new("snap-handler");
-
+        // storage.busy_mark
         let kv_service = KvService::new(
             storage,
             gc_worker,
