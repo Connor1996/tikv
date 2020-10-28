@@ -3193,6 +3193,7 @@ where
         //         self.apply_ctx.notifier.notify(normal.delegate.region_id(), PeerMsg::BusyResolved);
         //     }
         // }
+        APPLY_BUF_LEN_HISTOGRAM.observe(self.msg_buf.len() as f64);
         normal.handle_tasks(&mut self.apply_ctx, &mut self.msg_buf);
         if normal.delegate.wait_merge_state.is_some() {
             // Check it again immediately as catching up logs can be very fast.
@@ -3205,6 +3206,7 @@ where
     }
 
     fn end(&mut self, fsms: &mut [Box<ApplyFsm<E>>]) {
+        APPLY_FSM_LEN_HISTOGRAM.observe(fsms.len() as f64);
         let is_synced = self.apply_ctx.flush();
         if is_synced {
             for fsm in fsms {
@@ -3267,7 +3269,7 @@ impl<W: WriteBatch + WriteBatchVecExt<RocksEngine>> Builder<W> {
             region_scheduler: builder.region_scheduler.clone(),
             engine: builder.engines.kv.clone(),
             loop_duration_smoother: Arc::new(WindowSmoother::new(256)),
-            wait_duration_smoother: Arc::new(WindowSmoother::new(1024)),
+            wait_duration_smoother: Arc::new(WindowSmoother::new(256 * 4096)),
             busy_mark,
             _phantom: PhantomData,
             sender,

@@ -200,6 +200,34 @@ lazy_static! {
     pub static ref BUSY_MARK_COUNTER: BatchSystemVec =
         auto_flush_from!(BUSY_MARK_COUNTER_VEC, BatchSystemVec);
 
+    pub static ref RAFT_FSM_LEN_HISTOGRAM: Histogram =
+        register_histogram!(
+            "tikv_raftstore_fsm_len",
+            "Bucketed histogram of peer appending log duration",
+            exponential_buckets(1.0, 2.0, 14).unwrap()
+        ).unwrap();
+
+    pub static ref APPLY_FSM_LEN_HISTOGRAM: Histogram =
+        register_histogram!(
+            "tikv_apply_fsm_len",
+            "Bucketed histogram of peer appending log duration",
+            exponential_buckets(1.0, 2.0, 14).unwrap()
+        ).unwrap();
+
+    pub static ref RAFT_BUF_LEN_HISTOGRAM: Histogram =
+        register_histogram!(
+            "tikv_raftstore_buf_len",
+            "Bucketed histogram of peer appending log duration",
+            exponential_buckets(1.0, 2.0, 14).unwrap()
+        ).unwrap();
+
+    pub static ref APPLY_BUF_LEN_HISTOGRAM: Histogram =
+        register_histogram!(
+            "tikv_apply_buf_len",
+            "Bucketed histogram of peer appending log duration",
+            exponential_buckets(1.0, 2.0, 14).unwrap()
+        ).unwrap();
+
     pub static ref LOOP_DURATION_AVG_VEC: IntGaugeVec =
         register_int_gauge_vec!(
             "tikv_raftstore_loop_duration_avg",

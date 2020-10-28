@@ -31,7 +31,7 @@ use raft::eraftpb::{ConfChangeType, MessageType};
 use raft::{self, SnapshotStatus, INVALID_INDEX, NO_LIMIT};
 use raft::{Ready, StateRole};
 use tikv_util::mpsc::{self, LooseBoundedSender, Receiver, Sender};
-use tikv_util::time::{duration_to_nanos, duration_to_sec, Instant as TiInstant};;
+use tikv_util::time::{duration_to_nanos, duration_to_sec, Instant as TiInstant};
 use tikv_util::worker::{Scheduler, Stopped};
 use tikv_util::{escape, is_zero_duration};
 use txn_types::TxnExtra;

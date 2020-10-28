@@ -762,6 +762,7 @@ impl<T: Transport, C: PdClient> PollHandler<PeerFsm<RocksSnapshot>, StoreFsm> fo
         // } else {
         //     PIPELINE_PROPOSE_BUSY_COUNTER.inc();
         // }
+        RAFT_BUF_LEN_HISTOGRAM.observe(self.peer_msg_buf.len() as f64);
         let mut delegate = PeerFsmDelegate::new(peer, &mut self.poll_ctx);
         delegate.handle_msgs(&mut self.peer_msg_buf);
         delegate.collect_ready();
@@ -769,6 +770,7 @@ impl<T: Transport, C: PdClient> PollHandler<PeerFsm<RocksSnapshot>, StoreFsm> fo
     }
 
     fn end(&mut self, peers: &mut [Box<PeerFsm<RocksSnapshot>>]) {
+        RAFT_FSM_LEN_HISTOGRAM.observe(peers.len() as f64);
         if self.poll_ctx.has_ready {
             self.handle_raft_ready(peers);
         }
