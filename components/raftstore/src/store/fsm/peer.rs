@@ -3,7 +3,6 @@
 use std::borrow::Cow;
 use std::collections::Bound::{Excluded, Included, Unbounded};
 use std::collections::VecDeque;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{cmp, u64};
 
@@ -422,6 +421,7 @@ impl<'a, T: Transport, C: PdClient> PeerFsmDelegate<'a, T, C> {
 
     pub fn handle_msgs(&mut self, msgs: &mut Vec<PeerMsg<RocksSnapshot>>) {
         let timer = TiInstant::now_coarse();
+        let mut last_elapsed = None;
         for m in msgs.drain(..) {
             match m {
                 PeerMsg::RaftMessage(msg) => {
@@ -441,9 +441,8 @@ impl<'a, T: Transport, C: PdClient> PeerFsmDelegate<'a, T, C> {
                         .propose
                         .request_wait_time
                         .observe(duration_to_sec(elapsed) as f64);
-                    self.ctx
-                        .wait_duration_smoother
-                        .insert(duration_to_nanos(elapsed));
+                    last_elapsed = Some(elapsed);
+                   
 
                     let req_size = cmd.request.compute_size();
                     if self.fsm.batch_req_builder.can_batch(&cmd.request, req_size) {
@@ -478,6 +477,10 @@ impl<'a, T: Transport, C: PdClient> PeerFsmDelegate<'a, T, C> {
         RAFT_EVENT_DURATION
             .get(RaftEventDurationType::peer_msg)
             .observe(duration_to_sec(timer.elapsed()) as f64);
+        if let Some(t) = last_elapsed {
+            self.ctx.wait_duration_total += duration_to_nanos(t);
+            self.ctx.wait_duration_count += 1;
+        }
     }
 
     fn propose_batch_raft_command(&mut self) {

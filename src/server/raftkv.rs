@@ -14,6 +14,7 @@ use kvproto::{errorpb, metapb};
 use std::fmt::{self, Debug, Display, Formatter};
 use std::io::Error as IoError;
 use std::result;
+use std::sync::{Arc, Mutex, Condvar};
 use std::time::Duration;
 use txn_types::{Key, TxnExtra, Value};
 
@@ -103,13 +104,6 @@ impl From<RaftServerError> for KvError {
     }
 }
 
-/// `RaftKv` is a storage engine base on `RaftStore`.
-#[derive(Clone)]
-pub struct RaftKv<S: RaftStoreRouter<RocksSnapshot> + 'static> {
-    router: S,
-    engine: RocksEngine,
-}
-
 pub enum CmdRes {
     Resp(Vec<Response>),
     Snap(RegionSnapshot<RocksSnapshot>),
@@ -162,10 +156,25 @@ fn on_read_result(
     }
 }
 
+/// `RaftKv` is a storage engine base on `RaftStore`.
+#[derive(Clone)]
+pub struct RaftKv<S: RaftStoreRouter<RocksSnapshot> + 'static> {
+    router: S,
+    engine: RocksEngine,
+    pub raft_busy_mark: Arc<(Mutex<bool>, Condvar)>,
+    pub apply_busy_mark: Arc<(Mutex<bool>, Condvar)>,
+    // limiter: Limiter,
+}
+
 impl<S: RaftStoreRouter<RocksSnapshot>> RaftKv<S> {
     /// Create a RaftKv using specified configuration.
     pub fn new(router: S, engine: RocksEngine) -> RaftKv<S> {
-        RaftKv { router, engine }
+        RaftKv { 
+            router,
+            engine,
+            raft_busy_mark: Arc::new((Mutex::new(false), Condvar::new())),
+            apply_busy_mark: Arc::new((Mutex::new(false), Condvar::new())),
+        }
     }
 
     fn new_request_header(&self, ctx: &Context) -> RaftRequestHeader {
@@ -319,12 +328,15 @@ impl<S: RaftStoreRouter<RocksSnapshot>> Engine for RaftKv<S> {
         }
 
         let mut reqs = Vec::with_capacity(batch.modifies.len());
+        let mut total_bytes : usize = 0;
         for m in batch.modifies {
             let mut req = Request::default();
             match m {
                 Modify::Delete(cf, k) => {
                     let mut delete = DeleteRequest::default();
-                    delete.set_key(k.into_encoded());
+                    let key = k.into_encoded();
+                    total_bytes += key.len();
+                    delete.set_key(key);
                     if cf != CF_DEFAULT {
                         delete.set_cf(cf.to_string());
                     }
@@ -333,7 +345,9 @@ impl<S: RaftStoreRouter<RocksSnapshot>> Engine for RaftKv<S> {
                 }
                 Modify::Put(cf, k, v) => {
                     let mut put = PutRequest::default();
-                    put.set_key(k.into_encoded());
+                    let key = k.into_encoded();
+                    total_bytes += key.len() + v.len();
+                    put.set_key(key);
                     put.set_value(v);
                     if cf != CF_DEFAULT {
                         put.set_cf(cf.to_string());
@@ -357,6 +371,23 @@ impl<S: RaftStoreRouter<RocksSnapshot>> Engine for RaftKv<S> {
         ASYNC_REQUESTS_COUNTER_VEC.write.all.inc();
         let begin_instant = Instant::now_coarse();
 
+        ASYNC_WRITE_IN_BYTES_COUNTER.inc_by(total_bytes as i64);
+        {
+            let (raft_busy, raft_cvar) = &*self.raft_busy_mark;
+            let mut busy = raft_busy.lock().unwrap();
+            while *busy {
+                busy = raft_cvar.wait(busy).unwrap();
+            }
+        }
+        {
+            let (apply_busy, apply_cvar) = &*self.apply_busy_mark;
+            let mut busy = apply_busy.lock().unwrap();
+            while *busy {
+                busy = apply_cvar.wait(busy).unwrap();
+            }
+        }
+        ASYNC_WRITE_OUT_BYTES_COUNTER.inc_by(total_bytes as i64);
+        
         self.exec_write_requests(
             ctx,
             reqs,

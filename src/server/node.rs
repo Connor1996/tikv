@@ -1,7 +1,7 @@
 // Copyright 2016 TiKV Project Authors. Licensed under Apache-2.0.
 
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Condvar};
 use std::thread;
 use std::time::Duration;
 
@@ -41,8 +41,8 @@ pub fn create_raft_storage<S, P: PdClient + 'static>(
     lock_mgr: LockManager,
     pd_client: Arc<P>,
     pipelined_pessimistic_lock: bool,
-    raft_busy_mark: Arc<AtomicBool>,
-    apply_busy_mark: Arc<AtomicBool>,
+    raft_busy_mark: Arc<(Mutex<bool>, Condvar)>,
+    apply_busy_mark: Arc<(Mutex<bool>, Condvar)>,
 ) -> Result<Storage<RaftKv<S>, LockManager, P>>
 where
     S: RaftStoreRouter<RocksSnapshot> + 'static,
@@ -147,8 +147,8 @@ where
         importer: Arc<SSTImporter>,
         split_check_worker: Worker<SplitCheckTask>,
         auto_split_controller: AutoSplitController,
-        raft_busy_mark: Arc<AtomicBool>,
-        apply_busy_mark: Arc<AtomicBool>,
+        raft_busy_mark: Arc<(Mutex<bool>, Condvar)>,
+        apply_busy_mark: Arc<(Mutex<bool>, Condvar)>,
     ) -> Result<()>
     where
         T: Transport + 'static,
@@ -386,8 +386,8 @@ where
         importer: Arc<SSTImporter>,
         split_check_worker: Worker<SplitCheckTask>,
         auto_split_controller: AutoSplitController,
-        raft_busy_mark: Arc<AtomicBool>,
-        apply_busy_mark: Arc<AtomicBool>,
+        raft_busy_mark: Arc<(Mutex<bool>, Condvar)>,
+        apply_busy_mark: Arc<(Mutex<bool>, Condvar)>,
     ) -> Result<()>
     where
         T: Transport + 'static,

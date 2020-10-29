@@ -54,6 +54,7 @@ use std::sync::{atomic, atomic::AtomicBool, Arc};
 use tikv_util::time::Instant;
 use tikv_util::time::ThreadReadId;
 use txn_types::{Key, KvPair, TimeStamp, TsSet, Value};
+use std::sync::{Mutex, Condvar};
 
 pub type Result<T> = std::result::Result<T, Error>;
 pub type Callback<T> = Box<dyn FnOnce(Result<T>) + Send>;
@@ -156,8 +157,8 @@ impl<E: Engine, L: LockManager, P: PdClient + 'static> Storage<E, L, P> {
         lock_mgr: L,
         pd_client: Arc<P>,
         pipelined_pessimistic_lock: bool,
-        raft_busy_mark: Arc<AtomicBool>,
-        apply_busy_mark: Arc<AtomicBool>,
+        raft_busy_mark: Arc<(Mutex<bool>, Condvar)>,
+        apply_busy_mark: Arc<(Mutex<bool>, Condvar)>,
     ) -> Result<Self> {
         let sched = TxnScheduler::new(
             engine.clone(),
@@ -1330,8 +1331,8 @@ impl<E: Engine, L: LockManager> TestStorageBuilder<E, L> {
             self.lock_mgr,
             Arc::new(DummyPdClient::new()),
             self.pipelined_pessimistic_lock,
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicBool::new(false)),
+            Arc::new((Mutex::new(false), Condvar::new())),
+            Arc::new((Mutex::new(false), Condvar::new())),
         )
     }
 }

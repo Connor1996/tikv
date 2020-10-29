@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 #[cfg(test)]
 use std::sync::mpsc::Sender;
 use std::sync::mpsc::SyncSender;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Condvar};
 use std::time::Duration;
 use std::{cmp, usize};
 
@@ -378,7 +378,9 @@ where
 
     loop_duration_smoother: Arc<WindowSmoother>,
     wait_duration_smoother: Arc<WindowSmoother>,
-    busy_mark: Arc<AtomicBool>,
+    wait_duration_count: u64,
+    wait_duration_total: u64,
+    busy_mark: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl<E, W> ApplyContext<E, W>
@@ -397,7 +399,7 @@ where
         cfg: &Config,
         loop_duration_smoother: Arc<WindowSmoother>,
         wait_duration_smoother: Arc<WindowSmoother>,
-        busy_mark: Arc<AtomicBool>,
+        busy_mark: Arc<(Mutex<bool>, Condvar)>,
     ) -> ApplyContext<E, W> {
         ApplyContext::<E, W> {
             tag,
@@ -424,6 +426,8 @@ where
             txn_extras: MustConsumeVec::new("extra data from txn"),
             loop_duration_smoother,
             wait_duration_smoother,
+            wait_duration_total: 0,
+            wait_duration_count: 0,
             busy_mark,
         }
     }
@@ -3051,8 +3055,8 @@ where
             APPLY_TASK_WAIT_TIME_HISTOGRAM.observe(duration_to_sec(elapsed));
 
             apply_ctx
-                .wait_duration_smoother
-                .insert(duration_to_nanos(elapsed));
+                .wait_duration_total += duration_to_nanos(elapsed);
+            apply_ctx.wait_duration_count += 1;
         }
     }
 }
@@ -3142,6 +3146,8 @@ where
             self.apply_ctx.enable_sync_log = incoming.sync_log;
         }
         self.apply_ctx.perf_context_statistics.start();
+        self.apply_ctx.wait_duration_count = 0;
+        self.apply_ctx.wait_duration_total = 0; 
     }
 
     /// There is no control fsm in apply poller.
@@ -3218,22 +3224,30 @@ where
             .loop_duration_smoother
             .insert(duration_to_nanos(self.timer.elapsed()));
 
-        let wait_avg = self.apply_ctx.wait_duration_smoother.avg();
         let loop_avg = self.apply_ctx.loop_duration_smoother.avg();
         LOOP_DURATION_AVG_VEC
             .with_label_values(&["apply"])
             .set(loop_avg as i64);
+        let wait_avg = if self.apply_ctx.wait_duration_count != 0 {
+            (self.apply_ctx.wait_duration_total / self.apply_ctx.wait_duration_count) as f64
+        } else {
+            0.0
+        };
         WAIT_DURATION_AVG_VEC
             .with_label_values(&["apply"])
             .set(wait_avg as i64);
-        if self.apply_ctx.busy_mark.load(Ordering::SeqCst) == false {
-            if wait_avg > loop_avg * 2.0 {
-                self.apply_ctx.busy_mark.store(true, Ordering::SeqCst);
+        
+        let (lock, cvar) = &*self.apply_ctx.busy_mark;
+        let mut busy = lock.lock().unwrap();
+        if *busy == false {
+            if wait_avg > loop_avg * 3.0 {
+                *busy = true;
                 BUSY_MARK_COUNTER.apply.inc();
             }
         } else {
-            if wait_avg < loop_avg * 1.5 {
-                self.apply_ctx.busy_mark.store(false, Ordering::SeqCst);
+            if wait_avg < loop_avg * 2.0 {
+                *busy = false;
+                cvar.notify_all();
             }
         }
     }
@@ -3250,7 +3264,7 @@ pub struct Builder<W: WriteBatch + WriteBatchVecExt<RocksEngine>> {
     router: ApplyRouter,
     loop_duration_smoother: Arc<WindowSmoother>,
     wait_duration_smoother: Arc<WindowSmoother>,
-    busy_mark: Arc<AtomicBool>,
+    busy_mark: Arc<(Mutex<bool>, Condvar)>,
     _phantom: PhantomData<W>,
 }
 
@@ -3259,7 +3273,7 @@ impl<W: WriteBatch + WriteBatchVecExt<RocksEngine>> Builder<W> {
         builder: &RaftPollerBuilder<T, C>,
         sender: Notifier<RocksSnapshot>,
         router: ApplyRouter,
-        busy_mark: Arc<AtomicBool>,
+        busy_mark: Arc<(Mutex<bool>, Condvar)>,
     ) -> Builder<W> {
         Builder::<W> {
             tag: format!("[store {}]", builder.store.get_id()),
@@ -3269,7 +3283,7 @@ impl<W: WriteBatch + WriteBatchVecExt<RocksEngine>> Builder<W> {
             region_scheduler: builder.region_scheduler.clone(),
             engine: builder.engines.kv.clone(),
             loop_duration_smoother: Arc::new(WindowSmoother::new(256)),
-            wait_duration_smoother: Arc::new(WindowSmoother::new(256 * 4096)),
+            wait_duration_smoother: Arc::new(WindowSmoother::new(10)),
             busy_mark,
             _phantom: PhantomData,
             sender,

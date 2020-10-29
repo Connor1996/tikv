@@ -399,6 +399,16 @@ lazy_static! {
         exponential_buckets(0.0005, 2.0, 20).unwrap()
     )
     .unwrap();
+    pub static ref ASYNC_WRITE_IN_BYTES_COUNTER: IntCounter = register_int_counter!( 
+        "tikv_storage_engine_async_in_bytes_total",
+        "Total bytes of engine asynchronous requests"
+    )
+    .unwrap();
+    pub static ref ASYNC_WRITE_OUT_BYTES_COUNTER: IntCounter = register_int_counter!(
+        "tikv_storage_engine_async_out_bytes_total",
+        "Total bytes of engine asynchronous requests"
+    )
+    .unwrap();
 }
 
 lazy_static! {

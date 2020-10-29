@@ -54,6 +54,10 @@ impl WindowSmoother {
     pub fn avg(&self) -> f64 {
         self.sum.load(Ordering::SeqCst) as f64 / self.cap as f64
     }
+
+    pub fn clear(&self) {
+        self.sum.store(0, Ordering::SeqCst);
+    }
 }
 
 pub fn find_peer(region: &metapb::Region, store_id: u64) -> Option<&metapb::Peer> {

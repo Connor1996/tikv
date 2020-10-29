@@ -469,8 +469,8 @@ impl TiKVServer {
             storage_read_pools.handle()
         };
 
-        let raft_busy_mark = Arc::new(AtomicBool::new(false));
-        let apply_busy_mark = Arc::new(AtomicBool::new(false));
+        let raft_busy_mark = engines.engine.raft_busy_mark.clone();
+        let apply_busy_mark = engines.engine.apply_busy_mark.clone();
         let storage = create_raft_storage(
             engines.engine.clone(),
             &self.config.storage,

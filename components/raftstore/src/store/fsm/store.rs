@@ -24,8 +24,8 @@ use std::cmp::{Ord, Ordering as CmpOrdering};
 use std::collections::BTreeMap;
 use std::collections::Bound::{Excluded, Included, Unbounded};
 use std::ops::Deref;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, Condvar};
 use std::time::{Duration, Instant};
 use std::{mem, thread, u64};
 use time::{self, Timespec};
@@ -272,7 +272,9 @@ pub struct PollContext<T, C: 'static> {
     pub node_start_time: Option<Instant>,
     pub loop_duration_smoother: Arc<WindowSmoother>,
     pub wait_duration_smoother: Arc<WindowSmoother>,
-    pub busy_mark: Arc<AtomicBool>,
+    pub wait_duration_count: u64,
+    pub wait_duration_total: u64,
+    pub busy_mark: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl<T, C> HandleRaftReadyContext<RocksWriteBatch, RocksWriteBatch> for PollContext<T, C> {
@@ -655,6 +657,8 @@ impl<T: Transport, C: PdClient> PollHandler<PeerFsm<RocksSnapshot>, StoreFsm> fo
         self.poll_ctx.pending_count = 0;
         self.poll_ctx.sync_log = false;
         self.poll_ctx.has_ready = false;
+        self.poll_ctx.wait_duration_total = 0;
+        self.poll_ctx.wait_duration_count = 0;
         self.timer = TiInstant::now_coarse();
         // update config
         self.poll_ctx.perf_context_statistics.start();
@@ -784,24 +788,35 @@ impl<T: Transport, C: PdClient> PollHandler<PeerFsm<RocksSnapshot>, StoreFsm> fo
         self.poll_ctx
             .loop_duration_smoother
             .insert(duration_to_nanos(elapsed));
-        let wait_avg = self.poll_ctx.wait_duration_smoother.avg();
+        
         let loop_avg = self.poll_ctx.loop_duration_smoother.avg();
-        LOOP_DURATION_AVG_VEC
+            LOOP_DURATION_AVG_VEC
             .with_label_values(&["raft"])
             .set(loop_avg as i64);
+        
+        let wait_avg = if self.poll_ctx.wait_duration_count != 0 {
+            (self.poll_ctx.wait_duration_total / self.poll_ctx.wait_duration_count) as f64
+        } else {
+            0.0
+        };
         WAIT_DURATION_AVG_VEC
             .with_label_values(&["raft"])
             .set(wait_avg as i64);
-        if self.poll_ctx.busy_mark.load(Ordering::SeqCst) == false {
-            if wait_avg > loop_avg * 2.0 {
-                self.poll_ctx.busy_mark.store(true, Ordering::SeqCst);
+
+        let (lock, cvar) = &*self.poll_ctx.busy_mark;
+        let mut busy = lock.lock().unwrap();
+        if *busy == false {
+            if wait_avg > loop_avg * 3.0 {
+                *busy = true;
                 BUSY_MARK_COUNTER.raft.inc();
             }
         } else {
-            if wait_avg < loop_avg * 1.5 {
-                self.poll_ctx.busy_mark.store(false, Ordering::SeqCst);
+            if wait_avg < loop_avg * 2.0 {
+                *busy = false;
+                cvar.notify_all();
             }
         }
+
         self.poll_ctx.raft_metrics.flush();
         self.poll_ctx.store_stat.flush();
     }
@@ -838,7 +853,7 @@ pub struct RaftPollerBuilder<T, C> {
     global_replication_state: Arc<Mutex<GlobalReplicationState>>,
     loop_duration_smoother: Arc<WindowSmoother>,
     wait_duration_smoother: Arc<WindowSmoother>,
-    busy_mark: Arc<AtomicBool>,
+    busy_mark: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl<T, C> RaftPollerBuilder<T, C> {
@@ -1054,6 +1069,8 @@ where
             node_start_time: Some(Instant::now()),
             loop_duration_smoother: self.loop_duration_smoother.clone(),
             wait_duration_smoother: self.wait_duration_smoother.clone(),
+            wait_duration_count: 0,
+            wait_duration_total: 0,
             busy_mark: self.busy_mark.clone(),
         };
         let tag = format!("[store {}]", ctx.store.get_id());
@@ -1115,8 +1132,8 @@ impl RaftBatchSystem {
         split_check_worker: Worker<SplitCheckTask>,
         auto_split_controller: AutoSplitController,
         global_replication_state: Arc<Mutex<GlobalReplicationState>>,
-        raft_busy_mark: Arc<AtomicBool>,
-        apply_busy_mark: Arc<AtomicBool>,
+        raft_busy_mark: Arc<(Mutex<bool>, Condvar)>,
+        apply_busy_mark: Arc<(Mutex<bool>, Condvar)>,
     ) -> Result<()> {
         assert!(self.workers.is_none());
         // TODO: we can get cluster meta regularly too later.
@@ -1197,7 +1214,7 @@ impl RaftBatchSystem {
         region_peers: Vec<SenderFsmPair<RocksSnapshot>>,
         builder: RaftPollerBuilder<T, C>,
         auto_split_controller: AutoSplitController,
-        busy_mark: Arc<AtomicBool>,
+        busy_mark: Arc<(Mutex<bool>, Condvar)>,
     ) -> Result<()> {
         builder.snap_mgr.init()?;
 

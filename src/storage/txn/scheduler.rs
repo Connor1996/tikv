@@ -23,7 +23,7 @@
 use futures::future;
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar};
 use std::u64;
 
 use kvproto::kvrpcpb::{CommandPri, ExtraOp};
@@ -162,8 +162,8 @@ struct SchedulerInner<L: LockManager, P: PdClient + 'static> {
 
     pipelined_pessimistic_lock: bool,
 
-    raft_busy_mark: Arc<AtomicBool>,
-    apply_busy_mark: Arc<AtomicBool>,
+    raft_busy_mark: Arc<(std::sync::Mutex<bool>, Condvar)>,
+    apply_busy_mark: Arc<(std::sync::Mutex<bool>, Condvar)>,
 }
 
 #[inline]
@@ -226,8 +226,7 @@ impl<L: LockManager, P: PdClient + 'static> SchedulerInner<L, P> {
 
     fn too_busy(&self) -> bool {
         fail_point!("txn_scheduler_busy", |_| true);
-        (self.raft_busy_mark.load(Ordering::SeqCst) || self.apply_busy_mark.load(Ordering::SeqCst))
-            && self.running_write_bytes.load(Ordering::Acquire)
+        self.running_write_bytes.load(Ordering::Acquire)
                 >= self.sched_pending_write_threshold
     }
 
@@ -264,8 +263,8 @@ impl<E: Engine, L: LockManager, P: PdClient + 'static> Scheduler<E, L, P> {
         worker_pool_size: usize,
         sched_pending_write_threshold: usize,
         pipelined_pessimistic_lock: bool,
-        raft_busy_mark: Arc<AtomicBool>,
-        apply_busy_mark: Arc<AtomicBool>,
+        raft_busy_mark: Arc<(std::sync::Mutex<bool>, Condvar)>,
+        apply_busy_mark: Arc<(std::sync::Mutex<bool>, Condvar)>,
     ) -> Self {
         // Add 2 logs records how long is need to initialize TASKS_SLOTS_NUM * 2048000 `Mutex`es.
         // In a 3.5G Hz machine it needs 1.3s, which is a notable duration during start-up.
