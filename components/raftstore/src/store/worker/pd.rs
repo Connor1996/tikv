@@ -16,7 +16,10 @@ use tokio::task::spawn_local;
 use engine_traits::{KvEngine, RaftEngine};
 use kvproto::metapb;
 use kvproto::pdpb;
-use kvproto::raft_cmdpb::{AdminCmdType, AdminRequest, RaftCmdRequest, SplitRequest};
+use kvproto::raft_cmdpb::{
+    AdminCmdType, AdminRequest, ChangePeerRequest, ChangePeerV2Request, RaftCmdRequest,
+    SplitRequest,
+};
 use kvproto::raft_serverpb::RaftMessage;
 use kvproto::replication_modepb::RegionReplicationStatus;
 use prometheus::local::LocalHistogram;
@@ -25,8 +28,7 @@ use raft::eraftpb::ConfChangeType;
 use crate::coprocessor::{get_region_approximate_keys, get_region_approximate_size};
 use crate::store::cmd_resp::new_error;
 use crate::store::metrics::*;
-use crate::store::util::is_epoch_stale;
-use crate::store::util::KeysInfoFormatter;
+use crate::store::util::{is_epoch_stale, ConfChangeKind, KeysInfoFormatter};
 use crate::store::worker::split_controller::{SplitInfo, TOP_N};
 use crate::store::worker::{AutoSplitController, ReadStats};
 use crate::store::Callback;
@@ -136,6 +138,9 @@ where
         initial_status: u64,
         max_ts_sync_status: Arc<AtomicU64>,
     },
+    QueryRegionLeader {
+        region_id: u64,
+    },
 }
 
 pub struct StoreStat {
@@ -201,7 +206,7 @@ where
                 f,
                 "ask split region {} with key {}",
                 region.get_id(),
-                hex::encode_upper(&split_key),
+                log_wrappers::Value::key(&split_key),
             ),
             Task::AutoSplit {
                 ref split_infos,
@@ -262,6 +267,11 @@ where
             Task::UpdateMaxTimestamp { region_id, ..} => write!(
                 f,
                 "update the max timestamp for region {} in the concurrency manager",
+                region_id
+            ),
+            Task::QueryRegionLeader { region_id } => write!(
+                f,
+                "query the leader of region {}",
                 region_id
             ),
         }
@@ -832,6 +842,20 @@ where
                         change_peer.take_peer(),
                     );
                     send_admin_request(&router, region_id, epoch, peer, req, Callback::None);
+                } else if resp.has_change_peer_v2() {
+                    PD_HEARTBEAT_COUNTER_VEC
+                        .with_label_values(&["change peer"])
+                        .inc();
+
+                    let mut change_peer_v2 = resp.take_change_peer_v2();
+                    info!(
+                        "try to change peer";
+                        "region_id" => region_id,
+                        "changes" => ?change_peer_v2.get_changes(),
+                        "kind" => ?ConfChangeKind::confchange_kind(change_peer_v2.get_changes().len()),
+                    );
+                    let req = new_change_peer_v2_request(change_peer_v2.take_changes().into());
+                    send_admin_request(&router, region_id, epoch, peer, req, Callback::None);
                 } else if resp.has_transfer_leader() {
                     PD_HEARTBEAT_COUNTER_VEC
                         .with_label_values(&["transfer leader"])
@@ -858,11 +882,13 @@ where
                             region_epoch: epoch,
                             split_keys: split_region.take_keys().into(),
                             callback: Callback::None,
+                            source: "pd".into(),
                         }
                     } else {
                         CasualMessage::HalfSplitRegion {
                             region_epoch: epoch,
                             policy: split_region.get_policy(),
+                            source: "pd",
                         }
                     };
                     if let Err(e) = router.send(region_id, PeerMsg::CasualMessage(msg)) {
@@ -945,7 +971,7 @@ where
             while max_ts_sync_status.load(Ordering::SeqCst) == initial_status {
                 match pd_client.get_tso().await {
                     Ok(ts) => {
-                        concurrency_manager.update_max_read_ts(ts);
+                        concurrency_manager.update_max_ts(ts);
                         // Set the least significant bit to 1 to mark it as synced.
                         let old_value = max_ts_sync_status.compare_and_swap(
                             initial_status,
@@ -971,6 +997,26 @@ where
                     "region_id" => region_id,
                     "initial_status" => initial_status,
                 );
+            }
+        };
+        spawn_local(f);
+    }
+
+    fn handle_query_region_leader(&self, region_id: u64) {
+        let router = self.router.clone();
+        let resp = self.pd_client.get_region_leader_by_id(region_id);
+        let f = async move {
+            match resp.await {
+                Ok(Some((region, leader))) => {
+                    let msg = CasualMessage::QueryRegionLeaderResp { region, leader };
+                    if let Err(e) = router.send(region_id, PeerMsg::CasualMessage(msg)) {
+                        error!("send region info message failed"; "region_id" => region_id, "err" => ?e);
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    error!("get region failed"; "err" => ?e);
+                }
             }
         };
         spawn_local(f);
@@ -1135,6 +1181,7 @@ where
                 initial_status,
                 max_ts_sync_status,
             } => self.handle_update_max_timestamp(region_id, initial_status, max_ts_sync_status),
+            Task::QueryRegionLeader { region_id } => self.handle_query_region_leader(region_id),
         };
     }
 
@@ -1148,6 +1195,24 @@ fn new_change_peer_request(change_type: ConfChangeType, peer: metapb::Peer) -> A
     req.set_cmd_type(AdminCmdType::ChangePeer);
     req.mut_change_peer().set_change_type(change_type);
     req.mut_change_peer().set_peer(peer);
+    req
+}
+
+fn new_change_peer_v2_request(changes: Vec<pdpb::ChangePeer>) -> AdminRequest {
+    let mut req = AdminRequest::default();
+    req.set_cmd_type(AdminCmdType::ChangePeerV2);
+    let change_peer_reqs = changes
+        .into_iter()
+        .map(|mut c| {
+            let mut cp = ChangePeerRequest::default();
+            cp.set_change_type(c.get_change_type());
+            cp.set_peer(c.take_peer());
+            cp
+        })
+        .collect();
+    let mut cp = ChangePeerV2Request::default();
+    cp.set_changes(change_peer_reqs);
+    req.set_change_peer_v2(cp);
     req
 }
 
@@ -1257,7 +1322,7 @@ fn send_destroy_peer_message<EK, ER>(
 #[cfg(not(target_os = "macos"))]
 #[cfg(test)]
 mod tests {
-    use engine_rocks::RocksEngine;
+    use engine_test::kv::KvTestEngine;
     use std::sync::Mutex;
     use std::time::Instant;
     use tikv_util::worker::FutureWorker;
@@ -1266,13 +1331,13 @@ mod tests {
 
     struct RunnerTest {
         store_stat: Arc<Mutex<StoreStat>>,
-        stats_monitor: StatsMonitor<RocksEngine>,
+        stats_monitor: StatsMonitor<KvTestEngine>,
     }
 
     impl RunnerTest {
         fn new(
             interval: u64,
-            scheduler: Scheduler<Task<RocksEngine>>,
+            scheduler: Scheduler<Task<KvTestEngine>>,
             store_stat: Arc<Mutex<StoreStat>>,
         ) -> RunnerTest {
             let mut stats_monitor = StatsMonitor::new(Duration::from_secs(interval), scheduler);
@@ -1300,8 +1365,8 @@ mod tests {
         }
     }
 
-    impl Runnable<Task<RocksEngine>> for RunnerTest {
-        fn run(&mut self, task: Task<RocksEngine>) {
+    impl Runnable<Task<KvTestEngine>> for RunnerTest {
+        fn run(&mut self, task: Task<KvTestEngine>) {
             if let Task::StoreInfos {
                 cpu_usages,
                 read_io_rates,

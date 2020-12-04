@@ -89,6 +89,10 @@ make_auto_flush_static_metric! {
         seek,
         seek_for_prev,
         over_seek_bound,
+        next_tombstone,
+        prev_tombstone,
+        seek_tombstone,
+        seek_for_prev_tombstone,
     }
 
     pub struct GcCommandCounterVec: LocalIntCounter {
@@ -357,6 +361,7 @@ make_auto_flush_static_metric! {
         err_stale_command,
         err_store_not_match,
         err_raft_entry_too_large,
+        err_leader_memory_lock_check,
     }
 
     pub label_enum RequestTypeKind {

@@ -10,11 +10,12 @@ mod status_server;
 use std::sync::Arc;
 
 use ::security::{SecurityConfig, SecurityManager};
-use futures::Future;
+use futures::future::FutureExt;
 use grpcio::RpcStatusCode;
 use grpcio::*;
 use kvproto::coprocessor::*;
 use kvproto::kvrpcpb::*;
+use kvproto::mpp::*;
 use kvproto::raft_serverpb::{Done, RaftMessage, SnapshotChunk};
 use kvproto::tikvpb::{
     create_tikv, BatchCommandsRequest, BatchCommandsResponse, BatchRaftMessage, Tikv,
@@ -24,7 +25,7 @@ macro_rules! unary_call {
     ($name:tt, $req_name:tt, $resp_name:tt) => {
         fn $name(&mut self, ctx: RpcContext<'_>, _: $req_name, sink: UnarySink<$resp_name>) {
             let status = RpcStatus::new(RpcStatusCode::UNIMPLEMENTED, None);
-            ctx.spawn(sink.fail(status).map_err(|_| ()));
+            ctx.spawn(sink.fail(status).map(|_| ()));
         }
     };
 }
@@ -38,7 +39,7 @@ macro_rules! sstream_call {
             sink: ServerStreamingSink<$resp_name>,
         ) {
             let status = RpcStatus::new(RpcStatusCode::UNIMPLEMENTED, None);
-            ctx.spawn(sink.fail(status).map_err(|_| ()));
+            ctx.spawn(sink.fail(status).map(|_| ()));
         }
     };
 }
@@ -52,7 +53,7 @@ macro_rules! cstream_call {
             sink: ClientStreamingSink<$resp_name>,
         ) {
             let status = RpcStatus::new(RpcStatusCode::UNIMPLEMENTED, None);
-            ctx.spawn(sink.fail(status).map_err(|_| ()));
+            ctx.spawn(sink.fail(status).map(|_| ()));
         }
     };
 }
@@ -66,7 +67,7 @@ macro_rules! bstream_call {
             sink: DuplexSink<$resp_name>,
         ) {
             let status = RpcStatus::new(RpcStatusCode::UNIMPLEMENTED, None);
-            ctx.spawn(sink.fail(status).map_err(|_| ()));
+            ctx.spawn(sink.fail(status).map(|_| ()));
         }
     };
 }
@@ -211,9 +212,16 @@ trait MockKvService {
         PhysicalScanLockRequest,
         PhysicalScanLockResponse
     );
+    unary_call!(dispatch_mpp_task, DispatchTaskRequest, DispatchTaskResponse);
+    unary_call!(cancel_mpp_task, CancelTaskRequest, CancelTaskResponse);
     unary_call!(coprocessor, Request, Response);
     sstream_call!(batch_coprocessor, BatchRequest, BatchResponse);
     sstream_call!(coprocessor_stream, Request, Response);
+    sstream_call!(
+        establish_mpp_connection,
+        EstablishMppConnectionRequest,
+        MppDataPacket
+    );
     cstream_call!(raft, RaftMessage, Done);
     cstream_call!(batch_raft, BatchRaftMessage, Done);
     cstream_call!(snapshot, SnapshotChunk, Done);
@@ -318,9 +326,16 @@ impl<T: MockKvService + Clone + Send + 'static> Tikv for MockKv<T> {
         PhysicalScanLockRequest,
         PhysicalScanLockResponse
     );
+    unary_call_dispatch!(dispatch_mpp_task, DispatchTaskRequest, DispatchTaskResponse);
+    unary_call_dispatch!(cancel_mpp_task, CancelTaskRequest, CancelTaskResponse);
     unary_call_dispatch!(coprocessor, Request, Response);
     sstream_call_dispatch!(batch_coprocessor, BatchRequest, BatchResponse);
     sstream_call_dispatch!(coprocessor_stream, Request, Response);
+    sstream_call_dispatch!(
+        establish_mpp_connection,
+        EstablishMppConnectionRequest,
+        MppDataPacket
+    );
     cstream_call_dispatch!(raft, RaftMessage, Done);
     cstream_call_dispatch!(batch_raft, BatchRaftMessage, Done);
     cstream_call_dispatch!(snapshot, SnapshotChunk, Done);

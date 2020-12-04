@@ -3,7 +3,7 @@
 use std::fmt;
 use std::time::Instant;
 
-use engine_traits::{KvEngine, Snapshot};
+use engine_traits::{CompactedEvent, KvEngine, Snapshot};
 use kvproto::import_sstpb::SstMeta;
 use kvproto::kvrpcpb::ExtraOp as TxnExtraOp;
 use kvproto::metapb;
@@ -13,13 +13,13 @@ use kvproto::raft_cmdpb::{RaftCmdRequest, RaftCmdResponse};
 use kvproto::raft_serverpb::RaftMessage;
 use kvproto::replication_modepb::ReplicationStatus;
 use raft::SnapshotStatus;
+use std::borrow::Cow;
 
 use crate::store::fsm::apply::TaskRes as ApplyTaskRes;
 use crate::store::fsm::apply::{CatchUpLogs, ChangeCmd};
 use crate::store::metrics::RaftEventDurationType;
 use crate::store::util::KeysInfoFormatter;
 use crate::store::SnapKey;
-use engine_rocks::CompactedEvent;
 use tikv_util::escape;
 
 use super::{AbstractPeer, RegionSnapshot};
@@ -54,6 +54,7 @@ where
 
 pub type ReadCallback<S> = Box<dyn FnOnce(ReadResponse<S>) + Send>;
 pub type WriteCallback = Box<dyn FnOnce(WriteResponse) + Send>;
+pub type ExtCallback = Box<dyn FnOnce() + Send>;
 
 /// Variants of callbacks for `Msg`.
 ///  - `Read`: a callback for read only requests including `StatusRequest`,
@@ -66,13 +67,38 @@ pub enum Callback<S: Snapshot> {
     /// Read callback.
     Read(ReadCallback<S>),
     /// Write callback.
-    Write(WriteCallback),
+    Write {
+        cb: WriteCallback,
+        /// `proposed_cb` is called after a request is proposed to the raft group successfully.
+        /// It's used to notify the caller to move on early because it's very likely the request
+        /// will be applied to the raftstore.
+        proposed_cb: Option<ExtCallback>,
+        /// `committed_cb` is called after a request is committed and before it's being applied, and
+        /// it's guaranteed that the request will be successfully applied soon.
+        committed_cb: Option<ExtCallback>,
+    },
 }
 
 impl<S> Callback<S>
 where
     S: Snapshot,
 {
+    pub fn write(cb: WriteCallback) -> Self {
+        Self::write_ext(cb, None, None)
+    }
+
+    pub fn write_ext(
+        cb: WriteCallback,
+        proposed_cb: Option<ExtCallback>,
+        committed_cb: Option<ExtCallback>,
+    ) -> Self {
+        Callback::Write {
+            cb,
+            proposed_cb,
+            committed_cb,
+        }
+    }
+
     pub fn invoke_with_response(self, resp: RaftCmdResponse) {
         match self {
             Callback::None => (),
@@ -84,9 +110,25 @@ where
                 };
                 read(resp);
             }
-            Callback::Write(write) => {
+            Callback::Write { cb, .. } => {
                 let resp = WriteResponse { response: resp };
-                write(resp);
+                cb(resp);
+            }
+        }
+    }
+
+    pub fn invoke_proposed(&mut self) {
+        if let Callback::Write { proposed_cb, .. } = self {
+            if let Some(cb) = proposed_cb.take() {
+                cb()
+            }
+        }
+    }
+
+    pub fn invoke_committed(&mut self) {
+        if let Callback::Write { committed_cb, .. } = self {
+            if let Some(cb) = committed_cb.take() {
+                cb()
             }
         }
     }
@@ -99,10 +141,7 @@ where
     }
 
     pub fn is_none(&self) -> bool {
-        match self {
-            Callback::None => true,
-            _ => false,
-        }
+        matches!(self, Callback::None)
     }
 }
 
@@ -114,7 +153,7 @@ where
         match *self {
             Callback::None => write!(fmt, "Callback::None"),
             Callback::Read(_) => write!(fmt, "Callback::Read(..)"),
-            Callback::Write(_) => write!(fmt, "Callback::Write(..)"),
+            Callback::Write { .. } => write!(fmt, "Callback::Write(..)"),
         }
     }
 }
@@ -142,6 +181,17 @@ impl PeerTicks {
             PeerTicks::CHECK_PEER_STALE_STATE => "check_peer_stale_state",
             _ => unreachable!(),
         }
+    }
+    pub fn get_all_ticks() -> &'static [PeerTicks] {
+        const TICKS: &[PeerTicks] = &[
+            PeerTicks::RAFT,
+            PeerTicks::RAFT_LOG_GC,
+            PeerTicks::SPLIT_REGION_CHECK,
+            PeerTicks::PD_HEARTBEAT,
+            PeerTicks::CHECK_MERGE,
+            PeerTicks::CHECK_PEER_STALE_STATE,
+        ];
+        TICKS
     }
 }
 
@@ -239,6 +289,7 @@ pub enum CasualMessage<EK: KvEngine> {
         // TODO: support meta key.
         split_keys: Vec<Vec<u8>>,
         callback: Callback<EK::Snapshot>,
+        source: Cow<'static, str>,
     },
 
     /// Hash result of ComputeHash command.
@@ -264,6 +315,7 @@ pub enum CasualMessage<EK: KvEngine> {
     HalfSplitRegion {
         region_epoch: RegionEpoch,
         policy: CheckPolicy,
+        source: &'static str,
     },
     /// Remove snapshot files in `snaps`.
     GcSnap {
@@ -282,6 +334,12 @@ pub enum CasualMessage<EK: KvEngine> {
 
     /// A message to access peer's internal state.
     AccessPeer(Box<dyn FnOnce(&mut dyn AbstractPeer) + Send + 'static>),
+
+    /// Region info from PD
+    QueryRegionLeaderResp {
+        region: metapb::Region,
+        leader: metapb::Peer,
+    },
 }
 
 impl<EK: KvEngine> fmt::Debug for CasualMessage<EK> {
@@ -295,13 +353,18 @@ impl<EK: KvEngine> fmt::Debug for CasualMessage<EK> {
                 fmt,
                 "ComputeHashResult [index: {}, context: {}, hash: {}]",
                 index,
-                hex::encode_upper(&context),
+                log_wrappers::Value::key(&context),
                 escape(hash)
             ),
-            CasualMessage::SplitRegion { ref split_keys, .. } => write!(
+            CasualMessage::SplitRegion {
+                ref split_keys,
+                source,
+                ..
+            } => write!(
                 fmt,
-                "Split region with {}",
-                KeysInfoFormatter(split_keys.iter())
+                "Split region with {} from {}",
+                KeysInfoFormatter(split_keys.iter()),
+                source,
             ),
             CasualMessage::RegionApproximateSize { size } => {
                 write!(fmt, "Region's approximate size [size: {:?}]", size)
@@ -312,7 +375,9 @@ impl<EK: KvEngine> fmt::Debug for CasualMessage<EK> {
             CasualMessage::CompactionDeclinedBytes { bytes } => {
                 write!(fmt, "compaction declined bytes {}", bytes)
             }
-            CasualMessage::HalfSplitRegion { .. } => write!(fmt, "Half Split"),
+            CasualMessage::HalfSplitRegion { source, .. } => {
+                write!(fmt, "Half Split from {}", source)
+            }
             CasualMessage::GcSnap { ref snaps } => write! {
                 fmt,
                 "gc snaps {:?}",
@@ -326,6 +391,7 @@ impl<EK: KvEngine> fmt::Debug for CasualMessage<EK> {
             CasualMessage::SnapshotGenerated => write!(fmt, "SnapshotGenerated"),
             CasualMessage::ForceCompactRaftLogs => write!(fmt, "ForceCompactRaftLogs"),
             CasualMessage::AccessPeer(_) => write!(fmt, "AccessPeer"),
+            CasualMessage::QueryRegionLeaderResp { .. } => write!(fmt, "QueryRegionLeaderResp"),
         }
     }
 }
@@ -401,7 +467,10 @@ impl<EK: KvEngine> fmt::Debug for PeerMsg<EK> {
     }
 }
 
-pub enum StoreMsg {
+pub enum StoreMsg<EK>
+where
+    EK: KvEngine,
+{
     RaftMessage(RaftMessage),
 
     ValidateSSTResult {
@@ -419,7 +488,7 @@ pub enum StoreMsg {
     },
 
     // Compaction finished event
-    CompactedEvent(CompactedEvent),
+    CompactedEvent(EK::CompactedEvent),
     Tick(StoreTick),
     Start {
         store: metapb::Store,
@@ -432,14 +501,17 @@ pub enum StoreMsg {
     UpdateReplicationMode(ReplicationStatus),
 }
 
-impl fmt::Debug for StoreMsg {
+impl<EK> fmt::Debug for StoreMsg<EK>
+where
+    EK: KvEngine,
+{
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             StoreMsg::RaftMessage(_) => write!(fmt, "Raft Message"),
             StoreMsg::StoreUnreachable { store_id } => {
                 write!(fmt, "Store {}  is unreachable", store_id)
             }
-            StoreMsg::CompactedEvent(ref event) => write!(fmt, "CompactedEvent cf {}", event.cf),
+            StoreMsg::CompactedEvent(ref event) => write!(fmt, "CompactedEvent cf {}", event.cf()),
             StoreMsg::ValidateSSTResult { .. } => write!(fmt, "Validate SST Result"),
             StoreMsg::ClearRegionSizeInRange {
                 ref start_key,

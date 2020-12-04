@@ -587,9 +587,12 @@ mod tests {
     use super::*;
     use crate::storage::kv::{
         Cursor, Engine, Iterator, Result as EngineResult, RocksEngine, RocksSnapshot, ScanMode,
-        TestEngineBuilder, WriteData,
+        SnapContext, TestEngineBuilder, WriteData,
     };
     use crate::storage::mvcc::{Mutation, MvccTxn};
+    use crate::storage::txn::{
+        commit, prewrite, CommitKind, TransactionKind, TransactionProperties,
+    };
     use concurrency_manager::ConcurrencyManager;
     use engine_traits::CfName;
     use engine_traits::{IterOptions, ReadOptions};
@@ -615,7 +618,7 @@ mod tests {
                 .map(|i| format!("{}{}", KEY_PREFIX, i))
                 .collect();
             let ctx = Context::default();
-            let snapshot = engine.snapshot(&ctx).unwrap();
+            let snapshot = engine.snapshot(Default::default()).unwrap();
             let mut store = TestStore {
                 keys,
                 snapshot,
@@ -637,14 +640,20 @@ mod tests {
                 let mut txn = MvccTxn::new(self.snapshot.clone(), START_TS, true, cm);
                 for key in &self.keys {
                     let key = key.as_bytes();
-                    txn.prewrite(
+                    prewrite(
+                        &mut txn,
+                        &TransactionProperties {
+                            start_ts: START_TS,
+                            kind: TransactionKind::Optimistic(false),
+                            commit_kind: CommitKind::TwoPc,
+                            primary: pk,
+                            txn_size: 0,
+                            lock_ttl: 0,
+                            min_commit_ts: TimeStamp::default(),
+                        },
                         Mutation::Put((Key::from_raw(key), key.to_vec())),
-                        pk,
                         &None,
                         false,
-                        0,
-                        0,
-                        TimeStamp::default(),
                     )
                     .unwrap();
                 }
@@ -658,7 +667,7 @@ mod tests {
                 let mut txn = MvccTxn::new(self.snapshot.clone(), START_TS, true, cm);
                 for key in &self.keys {
                     let key = key.as_bytes();
-                    txn.commit(Key::from_raw(key), COMMIT_TS).unwrap();
+                    commit(&mut txn, Key::from_raw(key), COMMIT_TS).unwrap();
                 }
                 let write_data = WriteData::from_modifies(txn.into_modifies());
                 self.engine.write(&self.ctx, write_data).unwrap();
@@ -668,7 +677,11 @@ mod tests {
 
         #[inline]
         fn refresh_snapshot(&mut self) {
-            self.snapshot = self.engine.snapshot(&self.ctx).unwrap()
+            let snap_ctx = SnapContext {
+                pb_ctx: &self.ctx,
+                ..Default::default()
+            };
+            self.snapshot = self.engine.snapshot(snap_ctx).unwrap()
         }
 
         fn store(&self) -> SnapshotStore<Arc<RocksSnapshot>> {
@@ -748,6 +761,7 @@ mod tests {
             Ok(Cursor::new(
                 MockRangeSnapshotIter::default(),
                 ScanMode::Forward,
+                false,
             ))
         }
         fn iter_cf(
@@ -759,6 +773,7 @@ mod tests {
             Ok(Cursor::new(
                 MockRangeSnapshotIter::default(),
                 ScanMode::Forward,
+                false,
             ))
         }
         fn lower_bound(&self) -> Option<&[u8]> {

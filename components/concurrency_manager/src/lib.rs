@@ -31,28 +31,27 @@ use txn_types::{Key, Lock, TimeStamp};
 // the mutex.
 #[derive(Clone)]
 pub struct ConcurrencyManager {
-    max_read_ts: Arc<AtomicU64>,
+    max_ts: Arc<AtomicU64>,
     lock_table: LockTable,
 }
 
 impl ConcurrencyManager {
     pub fn new(latest_ts: TimeStamp) -> Self {
         ConcurrencyManager {
-            max_read_ts: Arc::new(AtomicU64::new(latest_ts.into_inner())),
+            max_ts: Arc::new(AtomicU64::new(latest_ts.into_inner())),
             lock_table: LockTable::default(),
         }
     }
 
-    pub fn max_read_ts(&self) -> TimeStamp {
-        TimeStamp::new(self.max_read_ts.load(Ordering::SeqCst))
+    pub fn max_ts(&self) -> TimeStamp {
+        TimeStamp::new(self.max_ts.load(Ordering::SeqCst))
     }
 
-    /// Updates max_read_ts with the given read_ts. It has no effect if
-    /// max_read_ts >= read_ts or read_ts is TimeStamp::max().
-    pub fn update_max_read_ts(&self, read_ts: TimeStamp) {
-        if read_ts != TimeStamp::max() {
-            self.max_read_ts
-                .fetch_max(read_ts.into_inner(), Ordering::SeqCst);
+    /// Updates max_ts with the given new_ts. It has no effect if
+    /// max_ts >= new_ts or new_ts is TimeStamp::max().
+    pub fn update_max_ts(&self, new_ts: TimeStamp) {
+        if new_ts != TimeStamp::max() {
+            self.max_ts.fetch_max(new_ts.into_inner(), Ordering::SeqCst);
         }
     }
 
@@ -75,7 +74,7 @@ impl ConcurrencyManager {
         // To prevent deadlock, we sort the keys and lock them one by one.
         keys_with_index.sort_by_key(|(_, key)| *key);
         let mut result: Vec<MaybeUninit<KeyHandleGuard>> = Vec::new();
-        result.resize_with(keys_with_index.len(), || MaybeUninit::uninit());
+        result.resize_with(keys_with_index.len(), MaybeUninit::uninit);
         for (index, key) in keys_with_index {
             result[index] = MaybeUninit::new(self.lock_table.lock_key(key).await);
         }
@@ -142,30 +141,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_update_max_read_ts() {
+    async fn test_update_max_ts() {
         let concurrency_manager = ConcurrencyManager::new(10.into());
-        concurrency_manager.update_max_read_ts(20.into());
-        assert_eq!(concurrency_manager.max_read_ts(), 20.into());
+        concurrency_manager.update_max_ts(20.into());
+        assert_eq!(concurrency_manager.max_ts(), 20.into());
 
-        concurrency_manager.update_max_read_ts(5.into());
-        assert_eq!(concurrency_manager.max_read_ts(), 20.into());
+        concurrency_manager.update_max_ts(5.into());
+        assert_eq!(concurrency_manager.max_ts(), 20.into());
 
-        concurrency_manager.update_max_read_ts(TimeStamp::max());
-        assert_eq!(concurrency_manager.max_read_ts(), 20.into());
+        concurrency_manager.update_max_ts(TimeStamp::max());
+        assert_eq!(concurrency_manager.max_ts(), 20.into());
     }
 
     fn new_lock(ts: impl Into<TimeStamp>, primary: &[u8], lock_type: LockType) -> Lock {
         let ts = ts.into();
-        Lock::new(
-            lock_type,
-            primary.to_vec(),
-            ts.into(),
-            0,
-            None,
-            0.into(),
-            1,
-            ts.into(),
-        )
+        Lock::new(lock_type, primary.to_vec(), ts, 0, None, 0.into(), 1, ts)
     }
 
     #[tokio::test]

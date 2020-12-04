@@ -234,7 +234,13 @@ pub fn extract_key_error(err: &Error) -> kvrpcpb::KeyError {
         Error(box ErrorInner::Txn(TxnError(box TxnErrorInner::Mvcc(MvccError(
             box MvccErrorInner::KeyIsLocked(info),
         )))))
-        | Error(box ErrorInner::Mvcc(MvccError(box MvccErrorInner::KeyIsLocked(info)))) => {
+        | Error(box ErrorInner::Txn(TxnError(box TxnErrorInner::Engine(EngineError(
+            box EngineErrorInner::Mvcc(MvccError(box MvccErrorInner::KeyIsLocked(info))),
+        )))))
+        | Error(box ErrorInner::Mvcc(MvccError(box MvccErrorInner::KeyIsLocked(info))))
+        | Error(box ErrorInner::Engine(EngineError(box EngineErrorInner::Mvcc(MvccError(
+            box MvccErrorInner::KeyIsLocked(info),
+        ))))) => {
             key_error.set_locked(info.clone());
         }
         // failed in prewrite or pessimistic lock
@@ -310,8 +316,15 @@ pub fn extract_key_error(err: &Error) -> kvrpcpb::KeyError {
             commit_ts_expired.set_min_commit_ts(min_commit_ts.into_inner());
             key_error.set_commit_ts_expired(commit_ts_expired);
         }
+        Error(box ErrorInner::Txn(TxnError(box TxnErrorInner::Mvcc(MvccError(
+            box MvccErrorInner::CommitTsTooLarge { min_commit_ts, .. },
+        ))))) => {
+            let mut commit_ts_too_large = kvrpcpb::CommitTsTooLarge::default();
+            commit_ts_too_large.set_commit_ts(min_commit_ts.into_inner());
+            key_error.set_commit_ts_too_large(commit_ts_too_large);
+        }
         _ => {
-            error!("txn aborts"; "err" => ?err);
+            error!(?err; "txn aborts");
             key_error.set_abort(format!("{:?}", err));
         }
     }
@@ -320,28 +333,31 @@ pub fn extract_key_error(err: &Error) -> kvrpcpb::KeyError {
 
 pub fn extract_kv_pairs(res: Result<Vec<Result<KvPair>>>) -> Vec<kvrpcpb::KvPair> {
     match res {
-        Ok(res) => res
-            .into_iter()
-            .map(|r| match r {
-                Ok((key, value)) => {
-                    let mut pair = kvrpcpb::KvPair::default();
-                    pair.set_key(key);
-                    pair.set_value(value);
-                    pair
-                }
-                Err(e) => {
-                    let mut pair = kvrpcpb::KvPair::default();
-                    pair.set_error(extract_key_error(&e));
-                    pair
-                }
-            })
-            .collect(),
+        Ok(res) => map_kv_pairs(res),
         Err(e) => {
             let mut pair = kvrpcpb::KvPair::default();
             pair.set_error(extract_key_error(&e));
             vec![pair]
         }
     }
+}
+
+pub fn map_kv_pairs(r: Vec<Result<KvPair>>) -> Vec<kvrpcpb::KvPair> {
+    r.into_iter()
+        .map(|r| match r {
+            Ok((key, value)) => {
+                let mut pair = kvrpcpb::KvPair::default();
+                pair.set_key(key);
+                pair.set_value(value);
+                pair
+            }
+            Err(e) => {
+                let mut pair = kvrpcpb::KvPair::default();
+                pair.set_error(extract_key_error(&e));
+                pair
+            }
+        })
+        .collect()
 }
 
 pub fn extract_key_errors(res: Result<Vec<Result<()>>>) -> Vec<kvrpcpb::KeyError> {

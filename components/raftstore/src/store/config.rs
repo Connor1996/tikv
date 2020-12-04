@@ -27,8 +27,6 @@ with_prefix!(prefix_store "store-");
 #[serde(default)]
 #[serde(rename_all = "kebab-case")]
 pub struct Config {
-    // true for high reliability, prevent data loss when power failure.
-    pub sync_log: bool,
     // minimizes disruption when a partitioned node rejoins the cluster by using a two phase election.
     #[config(skip)]
     pub prevote: bool,
@@ -196,7 +194,6 @@ impl Default for Config {
     fn default() -> Config {
         let split_size = ReadableSize::mb(coprocessor::config::SPLIT_SIZE_MB);
         Config {
-            sync_log: true,
             prevote: true,
             raftdb_path: String::new(),
             capacity: ReadableSize(0),
@@ -417,9 +414,6 @@ impl Config {
 
     pub fn write_into_metrics(&self) {
         CONFIG_RAFTSTORE_GAUGE
-            .with_label_values(&["sync_log"])
-            .set((self.sync_log as i32).into());
-        CONFIG_RAFTSTORE_GAUGE
             .with_label_values(&["prevote"])
             .set((self.prevote as i32).into());
 
@@ -587,6 +581,12 @@ impl Config {
         CONFIG_RAFTSTORE_GAUGE
             .with_label_values(&["future_poll_size"])
             .set(self.future_poll_size as f64);
+        CONFIG_RAFTSTORE_GAUGE
+            .with_label_values(&["hibernate_regions"])
+            .set((self.hibernate_regions as i32).into());
+        CONFIG_RAFTSTORE_GAUGE
+            .with_label_values(&["hibernate_timeout"])
+            .set(self.hibernate_timeout.0.as_secs_f64());
     }
 
     fn write_change_into_metrics(change: ConfigChange) {
