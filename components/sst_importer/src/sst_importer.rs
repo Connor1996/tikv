@@ -21,7 +21,7 @@ use tokio::time::timeout;
 use uuid::{Builder as UuidBuilder, Uuid};
 
 use encryption::{DataKeyManager, EncrypterWriter};
-use engine_rocks::{encryption::get_env, RocksSstReader};
+use engine_rocks::{RocksSstReader};
 use engine_traits::{
     EncryptionKeyManager, IngestExternalFileOptions, Iterator, KvEngine, SeekKey, SstReader,
     SstWriter, SstWriterBuilder, CF_DEFAULT, CF_WRITE,
@@ -244,9 +244,9 @@ impl SSTImporter {
 
         // now validate the SST file.
         let path_str = path.temp.to_str().unwrap();
-        let env = get_env(self.key_manager.clone(), None /*base_env*/)?;
+        // let env = get_env(self.key_manager.clone(), None /*base_env*/)?;
         // Use abstracted SstReader after Env is abstracted.
-        let sst_reader = RocksSstReader::open_with_env(path_str, Some(env))?;
+        let sst_reader = RocksSstReader::open_with_env(path_str, None)?;
         sst_reader.verify_checksum()?;
 
         debug!("downloaded file and verified";

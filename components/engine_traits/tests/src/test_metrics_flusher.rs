@@ -19,7 +19,7 @@ fn test_metrics_flusher() {
         .unwrap();
     let raft_path = path.path().join(Path::new("raft"));
     let mut db_opt = DBOptions::new();
-    db_opt.set_titandb_options(&TitanDBOptions::new());
+    // db_opt.set_titandb_options(&TitanDBOptions::new());
     let db_opt = RocksDBOptions::from_raw(db_opt);
     let cf_opts = RocksColumnFamilyOptions::new();
     let cfs_opts = vec![

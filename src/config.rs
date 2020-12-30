@@ -23,7 +23,7 @@ use configuration::{
 use engine::rocks::{
     BlockBasedOptions, Cache, ColumnFamilyOptions, CompactionPriority, DBCompactionStyle,
     DBCompressionType, DBOptions, DBRateLimiterMode, DBRecoveryMode, LRUCacheOptions,
-    TitanDBOptions,
+    // TitanDBOptions,
 };
 use slog;
 
@@ -137,23 +137,23 @@ impl Default for TitanCfConfig {
 }
 
 impl TitanCfConfig {
-    fn build_opts(&self) -> TitanDBOptions {
-        let mut opts = TitanDBOptions::new();
-        opts.set_min_blob_size(self.min_blob_size.0 as u64);
-        opts.set_blob_file_compression(self.blob_file_compression.into());
-        opts.set_blob_cache(self.blob_cache_size.0 as usize, -1, false, 0.0);
-        opts.set_min_gc_batch_size(self.min_gc_batch_size.0 as u64);
-        opts.set_max_gc_batch_size(self.max_gc_batch_size.0 as u64);
-        opts.set_discardable_ratio(self.discardable_ratio);
-        opts.set_sample_ratio(self.sample_ratio);
-        opts.set_merge_small_file_threshold(self.merge_small_file_threshold.0 as u64);
-        opts.set_blob_run_mode(self.blob_run_mode.into());
-        opts.set_level_merge(self.level_merge);
-        opts.set_range_merge(self.range_merge);
-        opts.set_max_sorted_runs(self.max_sorted_runs);
-        opts.set_gc_merge_rewrite(self.gc_merge_rewrite);
-        opts
-    }
+    // fn build_opts(&self) -> TitanDBOptions {
+    //     let mut opts = TitanDBOptions::new();
+    //     opts.set_min_blob_size(self.min_blob_size.0 as u64);
+    //     opts.set_blob_file_compression(self.blob_file_compression.into());
+    //     opts.set_blob_cache(self.blob_cache_size.0 as usize, -1, false, 0.0);
+    //     opts.set_min_gc_batch_size(self.min_gc_batch_size.0 as u64);
+    //     opts.set_max_gc_batch_size(self.max_gc_batch_size.0 as u64);
+    //     opts.set_discardable_ratio(self.discardable_ratio);
+    //     opts.set_sample_ratio(self.sample_ratio);
+    //     opts.set_merge_small_file_threshold(self.merge_small_file_threshold.0 as u64);
+    //     opts.set_blob_run_mode(self.blob_run_mode.into());
+    //     opts.set_level_merge(self.level_merge);
+    //     opts.set_range_merge(self.range_merge);
+    //     opts.set_max_sorted_runs(self.max_sorted_runs);
+    //     opts.set_gc_merge_rewrite(self.gc_merge_rewrite);
+    //     opts
+    // }
 }
 
 fn get_background_job_limit(
@@ -437,7 +437,7 @@ macro_rules! build_cf_opt {
         cf_opts.set_optimize_filters_for_hits($opt.optimize_filters_for_hits);
         cf_opts.set_force_consistency_checks($opt.force_consistency_checks);
         if $opt.enable_doubly_skiplist {
-            cf_opts.set_doubly_skiplist();
+            // cf_opts.set_doubly_skiplist();
         }
         cf_opts
     }};
@@ -502,7 +502,7 @@ impl DefaultCfConfig {
             prop_keys_index_distance: self.prop_keys_index_distance,
         });
         cf_opts.add_table_properties_collector_factory("tikv.range-properties-collector", f);
-        cf_opts.set_titandb_options(&self.titan.build_opts());
+        // cf_opts.set_titandb_options(&self.titan.build_opts());
         cf_opts
     }
 }
@@ -579,7 +579,7 @@ impl WriteCfConfig {
             prop_keys_index_distance: self.prop_keys_index_distance,
         });
         cf_opts.add_table_properties_collector_factory("tikv.range-properties-collector", f);
-        cf_opts.set_titandb_options(&self.titan.build_opts());
+        // cf_opts.set_titandb_options(&self.titan.build_opts());
         cf_opts
     }
 }
@@ -643,7 +643,7 @@ impl LockCfConfig {
         });
         cf_opts.add_table_properties_collector_factory("tikv.range-properties-collector", f);
         cf_opts.set_memtable_prefix_bloom_size_ratio(0.1);
-        cf_opts.set_titandb_options(&self.titan.build_opts());
+        // cf_opts.set_titandb_options(&self.titan.build_opts());
         cf_opts
     }
 }
@@ -702,7 +702,7 @@ impl RaftCfConfig {
             .set_prefix_extractor("NoopSliceTransform", f)
             .unwrap();
         cf_opts.set_memtable_prefix_bloom_size_ratio(0.1);
-        cf_opts.set_titandb_options(&self.titan.build_opts());
+        // cf_opts.set_titandb_options(&self.titan.build_opts());
         cf_opts
     }
 }
@@ -734,14 +734,14 @@ impl Default for TitanDBConfig {
 }
 
 impl TitanDBConfig {
-    fn build_opts(&self) -> TitanDBOptions {
-        let mut opts = TitanDBOptions::new();
-        opts.set_dirname(&self.dirname);
-        opts.set_disable_background_gc(self.disable_gc);
-        opts.set_max_background_gc(self.max_background_gc);
-        opts.set_purge_obsolete_files_period(self.purge_obsolete_files_period.as_secs() as usize);
-        opts
-    }
+    // fn build_opts(&self) -> TitanDBOptions {
+    //     let mut opts = TitanDBOptions::new();
+    //     opts.set_dirname(&self.dirname);
+    //     opts.set_disable_background_gc(self.disable_gc);
+    //     opts.set_max_background_gc(self.max_background_gc);
+    //     opts.set_purge_obsolete_files_period(self.purge_obsolete_files_period.as_secs() as usize);
+    //     opts
+    // }
 
     fn validate(&self) -> Result<(), Box<dyn Error>> {
         Ok(())
@@ -909,12 +909,12 @@ impl DbConfig {
             (self.enable_pipelined_write || self.enable_multi_batch_write)
                 && !self.enable_unordered_write,
         );
-        opts.enable_multi_batch_write(self.enable_multi_batch_write);
-        opts.enable_unordered_write(self.enable_unordered_write);
+        // opts.enable_multi_batch_write(self.enable_multi_batch_write);
+        // opts.enable_unordered_write(self.enable_unordered_write);
         opts.add_event_listener(RocksEventListener::new("kv"));
 
         if self.titan.enabled {
-            opts.set_titandb_options(&self.titan.build_opts());
+            // opts.set_titandb_options(&self.titan.build_opts());
         }
         opts
     }
@@ -1021,7 +1021,7 @@ impl RaftDefaultCfConfig {
         cf_opts
             .set_memtable_insert_hint_prefix_extractor("RaftPrefixSliceTransform", f)
             .unwrap();
-        cf_opts.set_titandb_options(&self.titan.build_opts());
+        // cf_opts.set_titandb_options(&self.titan.build_opts());
         cf_opts
     }
 }
@@ -1158,14 +1158,14 @@ impl RaftDbConfig {
             self.use_direct_io_for_flush_and_compaction,
         );
         opts.enable_pipelined_write(self.enable_pipelined_write);
-        opts.enable_unordered_write(self.enable_unordered_write);
+        // opts.enable_unordered_write(self.enable_unordered_write);
         opts.allow_concurrent_memtable_write(self.allow_concurrent_memtable_write);
         opts.add_event_listener(RocksEventListener::new("raft"));
         opts.set_bytes_per_sync(self.bytes_per_sync.0 as u64);
         opts.set_wal_bytes_per_sync(self.wal_bytes_per_sync.0 as u64);
         // TODO maybe create a new env for raft engine
         if self.titan.enabled {
-            opts.set_titandb_options(&self.titan.build_opts());
+            // opts.set_titandb_options(&self.titan.build_opts());
         }
 
         opts

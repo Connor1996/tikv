@@ -2,7 +2,7 @@
 
 use crate::engine::PanicEngine;
 use engine_traits::Result;
-use engine_traits::{DBOptions, DBOptionsExt, TitanDBOptions};
+use engine_traits::{DBOptions, DBOptionsExt};
 
 impl DBOptionsExt for PanicEngine {
     type DBOptions = PanicDBOptions;
@@ -18,7 +18,7 @@ impl DBOptionsExt for PanicEngine {
 pub struct PanicDBOptions;
 
 impl DBOptions for PanicDBOptions {
-    type TitanDBOptions = PanicTitanDBOptions;
+    // type TitanDBOptions = PanicTitanDBOptions;
 
     fn new() -> Self {
         panic!()
@@ -36,18 +36,18 @@ impl DBOptions for PanicDBOptions {
         panic!()
     }
 
-    fn set_titandb_options(&mut self, opts: &Self::TitanDBOptions) {
-        panic!()
-    }
+    // fn set_titandb_options(&mut self, opts: &Self::TitanDBOptions) {
+    //     panic!()
+    // }
 }
 
-pub struct PanicTitanDBOptions;
+// pub struct PanicTitanDBOptions;
 
-impl TitanDBOptions for PanicTitanDBOptions {
-    fn new() -> Self {
-        panic!()
-    }
-    fn set_min_blob_size(&mut self, size: u64) {
-        panic!()
-    }
-}
+// impl TitanDBOptions for PanicTitanDBOptions {
+//     fn new() -> Self {
+//         panic!()
+//     }
+//     fn set_min_blob_size(&mut self, size: u64) {
+//         panic!()
+//     }
+// }

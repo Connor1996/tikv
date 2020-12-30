@@ -6,7 +6,7 @@ use engine_traits::ColumnFamilyOptions;
 pub struct PanicColumnFamilyOptions;
 
 impl ColumnFamilyOptions for PanicColumnFamilyOptions {
-    type TitanDBOptions = PanicTitanDBOptions;
+    // type TitanDBOptions = PanicTitanDBOptions;
 
     fn new() -> Self {
         panic!()
@@ -29,7 +29,7 @@ impl ColumnFamilyOptions for PanicColumnFamilyOptions {
     fn set_block_cache_capacity(&self, capacity: u64) -> Result<(), String> {
         panic!()
     }
-    fn set_titandb_options(&mut self, opts: &Self::TitanDBOptions) {
-        panic!()
-    }
+    // fn set_titandb_options(&mut self, opts: &Self::TitanDBOptions) {
+    //     panic!()
+    // }
 }

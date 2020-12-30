@@ -8,6 +8,6 @@ pub use rocksdb::{
     DBCompressionType, DBEntryType, DBIterator, DBOptions, DBRateLimiterMode, DBRecoveryMode,
     DBStatisticsTickerType, DBTitanDBBlobRunMode, Env, EventListener, IngestExternalFileOptions,
     LRUCacheOptions, MemoryAllocator, PerfContext, Range, ReadOptions, SeekKey, SliceTransform,
-    TableFilter, TablePropertiesCollector, TablePropertiesCollectorFactory, TitanBlobIndex,
-    TitanDBOptions, Writable, WriteOptions, DB,
+    TableFilter, TablePropertiesCollector, TablePropertiesCollectorFactory,
+    Writable, WriteOptions, DB,
 };

@@ -2033,34 +2033,17 @@ dependencies = [
 [[package]]
 name = "librocksdb_sys"
 version = "0.1.0"
-source = "git+https://github.com/tikv/rust-rocksdb.git?branch=tikv-4.x#84369a7eee61422c476fe43835a53dae9490a39b"
+source = "git+https://github.com/Connor1996/rust-rocksdb.git?branch=terark#3bb4a13f76661e3599c99da8a290c1a7ec01d81b"
 dependencies = [
  "bindgen",
  "bzip2-sys",
  "cc",
  "cmake",
  "libc",
- "libtitan_sys",
  "libz-sys",
  "lz4-sys",
- "openssl-sys",
  "snappy-sys",
  "tikv-jemalloc-sys",
- "zstd-sys",
-]
-
-[[package]]
-name = "libtitan_sys"
-version = "0.0.1"
-source = "git+https://github.com/tikv/rust-rocksdb.git?branch=tikv-4.x#84369a7eee61422c476fe43835a53dae9490a39b"
-dependencies = [
- "bzip2-sys",
- "cc",
- "cmake",
- "libc",
- "libz-sys",
- "lz4-sys",
- "snappy-sys",
  "zstd-sys",
 ]
 
@@ -3519,7 +3502,7 @@ checksum = "cabe4fa914dec5870285fa7f71f602645da47c486e68486d2b4ceb4a343e90ac"
 [[package]]
 name = "rocksdb"
 version = "0.3.0"
-source = "git+https://github.com/tikv/rust-rocksdb.git?branch=tikv-4.x#84369a7eee61422c476fe43835a53dae9490a39b"
+source = "git+https://github.com/Connor1996/rust-rocksdb.git?branch=terark#3bb4a13f76661e3599c99da8a290c1a7ec01d81b"
 dependencies = [
  "libc",
  "librocksdb_sys",

@@ -30,15 +30,15 @@ impl WriteBatchExt for RocksEngine {
 
     fn write_vec_opt(&self, wb: &RocksWriteBatchVec, opts: &WriteOptions) -> Result<()> {
         let opt: RocksWriteOptions = opts.into();
-        if wb.index > 0 {
-            self.as_inner()
-                .multi_batch_write(wb.as_inner(), &opt.into_raw())
-                .map_err(Error::Engine)
-        } else {
+        unreachable!();
+        // if wb.index > 0 {
+        //     self.as_inner()
+        //         .multi_batch_write(wb.as_inner(), &opt.into_raw())
+        //         .map_err(Error::Engine)
+        // } else {
             self.as_inner()
                 .write_opt(&wb.wbs[0], &opt.into_raw())
                 .map_err(Error::Engine)
-        }
     }
 
     fn support_write_batch_vec(&self) -> bool {

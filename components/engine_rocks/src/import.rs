@@ -4,7 +4,7 @@ use crate::engine::RocksEngine;
 use engine_traits::ImportExt;
 use engine_traits::IngestExternalFileOptions;
 use engine_traits::Result;
-use rocksdb::set_external_sst_file_global_seq_no;
+// use rocksdb::set_external_sst_file_global_seq_no;
 use rocksdb::IngestExternalFileOptions as RawIngestExternalFileOptions;
 use std::fs::File;
 use std::path::Path;
@@ -38,14 +38,14 @@ impl ImportExt for RocksEngine {
         _expected_size: u64,
         _expected_checksum: u32,
     ) -> Result<()> {
-        let path = path.as_ref().to_str().unwrap();
-        let f = File::open(path)?;
+        // let path = path.as_ref().to_str().unwrap();
+        // let f = File::open(path)?;
 
-        // RocksDB may have modified the global seqno.
-        let cf = cf.as_inner();
-        set_external_sst_file_global_seq_no(&self.as_inner(), cf, path, 0)?;
-        f.sync_all()
-            .map_err(|e| format!("sync {}: {:?}", path, e))?;
+        // // RocksDB may have modified the global seqno.
+        // let cf = cf.as_inner();
+        // set_external_sst_file_global_seq_no(&self.as_inner(), cf, path, 0)?;
+        // f.sync_all()
+        //     .map_err(|e| format!("sync {}: {:?}", path, e))?;
 
         Ok(())
     }

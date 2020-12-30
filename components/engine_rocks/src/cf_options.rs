@@ -1,6 +1,6 @@
 // Copyright 2019 TiKV Project Authors. Licensed under Apache-2.0.
 
-use crate::db_options::RocksTitanDBOptions;
+// use crate::db_options::RocksTitanDBOptions;
 use engine_traits::ColumnFamilyOptions;
 use rocksdb::ColumnFamilyOptions as RawCFOptions;
 
@@ -17,7 +17,7 @@ impl RocksColumnFamilyOptions {
 }
 
 impl ColumnFamilyOptions for RocksColumnFamilyOptions {
-    type TitanDBOptions = RocksTitanDBOptions;
+    // type TitanDBOptions = RocksTitanDBOptions;
 
     fn new() -> Self {
         RocksColumnFamilyOptions::from_raw(RawCFOptions::new())
@@ -47,7 +47,7 @@ impl ColumnFamilyOptions for RocksColumnFamilyOptions {
         self.0.set_block_cache_capacity(capacity)
     }
 
-    fn set_titandb_options(&mut self, opts: &Self::TitanDBOptions) {
-        self.0.set_titandb_options(opts.as_raw())
-    }
+    // fn set_titandb_options(&mut self, opts: &Self::TitanDBOptions) {
+        // self.0.set_titandb_options(opts.as_raw())
+    // }
 }

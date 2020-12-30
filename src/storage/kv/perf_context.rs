@@ -9,8 +9,8 @@ pub struct PerfStatisticsFields {
     pub block_cache_hit_count: usize,
     pub block_read_count: usize,
     pub block_read_byte: usize,
-    pub encrypt_data_nanos: usize,
-    pub decrypt_data_nanos: usize,
+    // pub encrypt_data_nanos: usize,
+    // pub decrypt_data_nanos: usize,
 }
 
 /// Store statistics we need. Data comes from RocksDB's `PerfContext`.
@@ -38,8 +38,8 @@ impl PerfStatisticsInstant {
             block_cache_hit_count: perf_context.block_cache_hit_count() as usize,
             block_read_count: perf_context.block_read_count() as usize,
             block_read_byte: perf_context.block_read_byte() as usize,
-            encrypt_data_nanos: perf_context.encrypt_data_nanos() as usize,
-            decrypt_data_nanos: perf_context.decrypt_data_nanos() as usize,
+            // encrypt_data_nanos: perf_context.encrypt_data_nanos() as usize,
+            // decrypt_data_nanos: perf_context.decrypt_data_nanos() as usize,
         })
     }
 

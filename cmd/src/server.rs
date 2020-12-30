@@ -12,7 +12,7 @@ use crate::{setup::*, signal_handler};
 use encryption::DataKeyManager;
 use engine::rocks;
 use engine_rocks::{
-    encryption::get_env, Compat, RocksEngine, RocksMetricsFlusher, DEFAULT_FLUSHER_INTERVAL,
+    Compat, RocksEngine, RocksMetricsFlusher, DEFAULT_FLUSHER_INTERVAL,
 };
 use engine_traits::{KvEngines, MetricsFlusher};
 use fs2::FileExt;
@@ -330,12 +330,12 @@ impl TiKVServer {
     }
 
     fn init_engines(&mut self) {
-        let env = get_env(self.encryption_key_manager.clone(), None /*base_env*/).unwrap();
+        // let env = get_env(self.encryption_key_manager.clone(), None /*base_env*/).unwrap();
         let block_cache = self.config.storage.block_cache.build_shared_cache();
 
         let raft_db_path = Path::new(&self.config.raft_store.raftdb_path);
         let mut raft_db_opts = self.config.raftdb.build_opt();
-        raft_db_opts.set_env(env.clone());
+        // raft_db_opts.set_env(env.clone());
         let raft_db_cf_opts = self.config.raftdb.build_cf_opts(&block_cache);
         let raft_engine = rocks::util::new_engine_opt(
             raft_db_path.to_str().unwrap(),
@@ -346,7 +346,7 @@ impl TiKVServer {
 
         // Create kv engine.
         let mut kv_db_opts = self.config.rocksdb.build_opt();
-        kv_db_opts.set_env(env);
+        // kv_db_opts.set_env(env);
         kv_db_opts.add_event_listener(new_compaction_listener(self.router.clone()));
         let kv_cfs_opts = self.config.rocksdb.build_cf_opts(&block_cache);
         let db_path = self

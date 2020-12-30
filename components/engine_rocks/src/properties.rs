@@ -7,7 +7,7 @@ use std::ops::{Deref, DerefMut};
 use std::u64;
 
 use rocksdb::{
-    DBEntryType, TablePropertiesCollector, TablePropertiesCollectorFactory, TitanBlobIndex,
+    DBEntryType, TablePropertiesCollector, TablePropertiesCollectorFactory,
     UserCollectedProperties,
 };
 use tikv_util::codec::number::{self, NumberEncoder};
@@ -22,10 +22,10 @@ pub const DEFAULT_PROP_KEYS_INDEX_DISTANCE: u64 = 40 * 1024;
 fn get_entry_size(value: &[u8], entry_type: DBEntryType) -> std::result::Result<u64, ()> {
     match entry_type {
         DBEntryType::Put => Ok(value.len() as u64),
-        DBEntryType::BlobIndex => match TitanBlobIndex::decode(value) {
-            Ok(index) => Ok(index.blob_size + value.len() as u64),
-            Err(_) => Err(()),
-        },
+        // DBEntryType::BlobIndex => match TitanBlobIndex::decode(value) {
+        //     Ok(index) => Ok(index.blob_size + value.len() as u64),
+        //     Err(_) => Err(()),
+        // },
         _ => Err(()),
     }
 }

@@ -12,17 +12,17 @@ pub trait DBOptionsExt {
 
 /// A handle to a database's options
 pub trait DBOptions {
-    type TitanDBOptions: TitanDBOptions;
+    // type TitanDBOptions: TitanDBOptions;
 
     fn new() -> Self;
     fn get_max_background_jobs(&self) -> i32;
     fn get_rate_bytes_per_sec(&self) -> Option<i64>;
     fn set_rate_bytes_per_sec(&mut self, rate_bytes_per_sec: i64) -> Result<()>;
-    fn set_titandb_options(&mut self, opts: &Self::TitanDBOptions);
+    // fn set_titandb_options(&mut self, opts: &Self::TitanDBOptions);
 }
 
-/// Titan-specefic options
-pub trait TitanDBOptions {
-    fn new() -> Self;
-    fn set_min_blob_size(&mut self, size: u64);
-}
+// /// Titan-specefic options
+// pub trait TitanDBOptions {
+//     fn new() -> Self;
+//     fn set_min_blob_size(&mut self, size: u64);
+// }

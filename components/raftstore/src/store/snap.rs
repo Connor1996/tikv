@@ -615,22 +615,22 @@ impl Snap {
                 continue;
             }
 
-            if !plain_file_used(cf_file.cf) {
-                // Reset global seq number.
-                let cf = engine.cf_handle(cf_file.cf)?;
-                engine.validate_sst_for_ingestion(
-                    &cf,
-                    &cf_file.path,
-                    cf_file.size,
-                    cf_file.checksum,
-                )?;
-            }
-            check_file_size_and_checksum(
-                &cf_file.path,
-                cf_file.size,
-                cf_file.checksum,
-                self.mgr.encryption_key_manager.as_ref(),
-            )?;
+            // if !plain_file_used(cf_file.cf) {
+            //     // Reset global seq number.
+            //     let cf = engine.cf_handle(cf_file.cf)?;
+            //     engine.validate_sst_for_ingestion(
+            //         &cf,
+            //         &cf_file.path,
+            //         cf_file.size,
+            //         cf_file.checksum,
+            //     )?;
+            // }
+            // check_file_size_and_checksum(
+            //     &cf_file.path,
+            //     cf_file.size,
+            //     cf_file.checksum,
+            //     self.mgr.encryption_key_manager.as_ref(),
+            // )?;
 
             if !for_send && !plain_file_used(cf_file.cf) {
                 sst_importer::prepare_sst_for_ingestion(

@@ -28,7 +28,7 @@ use encryption::{
 };
 use engine::rocks;
 use engine::Engines;
-use engine_rocks::encryption::get_env;
+// use engine_rocks::encryption::get_env;
 use engine_traits::{EncryptionKeyManager, ALL_CFS, CF_DEFAULT, CF_LOCK, CF_WRITE};
 use keys;
 use kvproto::debugpb::{Db as DBType, *};
@@ -71,10 +71,10 @@ fn new_debug_executor(
                 DataKeyManager::from_config(&cfg.security.encryption, &cfg.storage.data_dir)
                     .unwrap()
                     .map(|key_manager| Arc::new(key_manager));
-            let env = get_env(key_manager, None).unwrap();
+            // let env = get_env(key_manager, None).unwrap();
             let cache = cfg.storage.block_cache.build_shared_cache();
             let mut kv_db_opts = cfg.rocksdb.build_opt();
-            kv_db_opts.set_env(env.clone());
+            // kv_db_opts.set_env(env.clone());
             kv_db_opts.set_paranoid_checks(!skip_paranoid_checks);
             let kv_cfs_opts = cfg.rocksdb.build_cf_opts(&cache);
             let kv_path = PathBuf::from(kv_path).canonicalize().unwrap();
@@ -91,7 +91,7 @@ fn new_debug_executor(
                 .map(ToString::to_string)
                 .unwrap();
             let mut raft_db_opts = cfg.raftdb.build_opt();
-            raft_db_opts.set_env(env);
+            // raft_db_opts.set_env(env);
             let raft_db_cf_opts = cfg.raftdb.build_cf_opts(&cache);
             let raft_db =
                 rocks::util::new_engine_opt(&raft_path, raft_db_opts, raft_db_cf_opts).unwrap();
@@ -2368,9 +2368,9 @@ fn run_ldb_command(cmd: &ArgMatches<'_>, cfg: &TiKvConfig) {
     let key_manager = DataKeyManager::from_config(&cfg.security.encryption, &cfg.storage.data_dir)
         .unwrap()
         .map(|key_manager| Arc::new(key_manager));
-    let env = get_env(key_manager, None).unwrap();
+    // let env = get_env(key_manager, None).unwrap();
     let mut opts = cfg.rocksdb.build_opt();
-    opts.set_env(env);
+    // opts.set_env(env);
 
     engine::rocks::run_ldb_tool(&args, &opts);
 }

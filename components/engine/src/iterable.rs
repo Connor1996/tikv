@@ -69,7 +69,7 @@ impl IterOptionsExt for IterOption {
         let mut opts = ReadOptions::new();
         opts.fill_cache(self.fill_cache());
         if self.key_only() {
-            opts.set_titan_key_only(true);
+            // opts.set_titan_key_only(true);
         }
         if self.total_order_seek_used() {
             opts.set_total_order_seek(true);
