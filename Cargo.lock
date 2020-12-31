@@ -2033,7 +2033,7 @@ dependencies = [
 [[package]]
 name = "librocksdb_sys"
 version = "0.1.0"
-source = "git+https://github.com/Connor1996/rust-rocksdb.git?branch=terark#3bb4a13f76661e3599c99da8a290c1a7ec01d81b"
+source = "git+https://github.com/Connor1996/rust-rocksdb.git?branch=terark#227e36cd30c348820163babc3de77dc2157aafa7"
 dependencies = [
  "bindgen",
  "bzip2-sys",
@@ -3502,7 +3502,7 @@ checksum = "cabe4fa914dec5870285fa7f71f602645da47c486e68486d2b4ceb4a343e90ac"
 [[package]]
 name = "rocksdb"
 version = "0.3.0"
-source = "git+https://github.com/Connor1996/rust-rocksdb.git?branch=terark#3bb4a13f76661e3599c99da8a290c1a7ec01d81b"
+source = "git+https://github.com/Connor1996/rust-rocksdb.git?branch=terark#227e36cd30c348820163babc3de77dc2157aafa7"
 dependencies = [
  "libc",
  "librocksdb_sys",
