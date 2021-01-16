@@ -35,7 +35,7 @@ use tikv::{server::raftkv::WriteBatchFlags, storage::txn::TxnEntry};
 use tikv_util::mpsc::batch::Sender as BatchSender;
 use tikv_util::time::Instant;
 use txn_types::{Key, Lock, LockType, TimeStamp, WriteRef, WriteType};
-
+use engine_traits::cf_to_str;
 use crate::endpoint::{OldValueCache, OldValueCallback};
 use crate::metrics::*;
 use crate::service::{CdcEvent, ConnID};
@@ -595,7 +595,7 @@ impl Delegate {
                 continue;
             }
             let mut put = req.take_put();
-            match put.cf.as_str() {
+            match cf_to_str(put.cf)  {
                 "write" => {
                     let mut row = EventRow::default();
                     let skip = decode_write(put.take_key(), put.get_value(), &mut row, true);

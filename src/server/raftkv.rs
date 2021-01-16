@@ -12,7 +12,7 @@ use bitflags::bitflags;
 use concurrency_manager::ConcurrencyManager;
 use engine_rocks::{RocksEngine, RocksSnapshot, RocksTablePropertiesCollection};
 use engine_traits::CF_DEFAULT;
-use engine_traits::{CfName, KvEngine};
+use engine_traits::{CfName, str_to_cf, KvEngine};
 use engine_traits::{
     IterOptions, MvccProperties, MvccPropertiesExt, Peekable, ReadOptions, Snapshot,
     TablePropertiesExt,
@@ -402,9 +402,7 @@ where
                 Modify::Delete(cf, k) => {
                     let mut delete = DeleteRequest::default();
                     delete.set_key(k.into_encoded());
-                    if cf != CF_DEFAULT {
-                        delete.set_cf(cf.to_string());
-                    }
+                        delete.set_cf(str_to_cf(cf));
                     req.set_cmd_type(CmdType::Delete);
                     req.set_delete(delete);
                 }
@@ -412,15 +410,13 @@ where
                     let mut put = PutRequest::default();
                     put.set_key(k.into_encoded());
                     put.set_value(v);
-                    if cf != CF_DEFAULT {
-                        put.set_cf(cf.to_string());
-                    }
+                        put.set_cf(str_to_cf(cf));
                     req.set_cmd_type(CmdType::Put);
                     req.set_put(put);
                 }
                 Modify::DeleteRange(cf, start_key, end_key, notify_only) => {
                     let mut delete_range = DeleteRangeRequest::default();
-                    delete_range.set_cf(cf.to_string());
+                        delete_range.set_cf(str_to_cf(cf));
                     delete_range.set_start_key(start_key.into_encoded());
                     delete_range.set_end_key(end_key.into_encoded());
                     delete_range.set_notify_only(notify_only);

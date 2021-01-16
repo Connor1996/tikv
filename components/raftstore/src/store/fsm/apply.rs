@@ -22,7 +22,7 @@ use engine_rocks::{PerfContext, PerfLevel};
 use engine_traits::{
     DeleteStrategy, KvEngine, RaftEngine, Range as EngineRange, Snapshot, WriteBatch,
 };
-use engine_traits::{ALL_CFS, CF_DEFAULT, CF_LOCK, CF_RAFT, CF_WRITE};
+use engine_traits::{ALL_CFS, CF_DEFAULT,cf_to_str, CF_LOCK, CF_RAFT, CF_WRITE};
 use kvproto::import_sstpb::SstMeta;
 use kvproto::kvrpcpb::ExtraOp as TxnExtraOp;
 use kvproto::metapb::{PeerRole, Region, RegionEpoch};
@@ -795,7 +795,8 @@ where
         ApplyDelegate {
             id: reg.id,
             tag: format!("[region {}] {}", reg.region.get_id(), reg.id),
-            common_prefix: common_prefix(&reg.region),
+            // common_prefix: common_prefix(&reg.region),
+            common_prefix: vec![],
             last_key: reg.last_key,
             region: reg.region,
             pending_remove: false,
@@ -925,7 +926,7 @@ where
                     let mut key = self.common_prefix.clone();
                     key.extend_from_slice(self.last_key.split_at(prefix_len as usize).0);
                     key.append(&mut truncated_key);
-                    println!("get prefix {}, last_key {:?} to full {:?}", prefix_len, self.last_key, key);
+                    // println!("get prefix {}, last_key {:?} to full {:?}", prefix_len, self.last_key, key);
                     self.last_key = key.clone();
                     r.mut_get().set_key(key);
                     r.mut_get().set_prefix_len(0);
@@ -936,7 +937,7 @@ where
                     let mut key = self.common_prefix.clone();
                     key.extend_from_slice(self.last_key.split_at(prefix_len as usize).0);
                     key.append(&mut truncated_key);
-                    println!("[{}] put prefix {}, last_key {:?} to full {:?}, common_prefix {:?}", self.tag, prefix_len, self.last_key, key, self.common_prefix);
+                    // println!("[{}] put prefix {}, last_key {:?} to full {:?}, common_prefix {:?}", self.tag, prefix_len, self.last_key, key, self.common_prefix);
                     
                     self.last_key = key.clone();
                     r.mut_put().set_key(key);
@@ -946,7 +947,7 @@ where
                     let prefix_len = r.get_delete().get_prefix_len();
                     let mut truncated_key = r.mut_delete().take_key();
                     let mut key = self.common_prefix.clone();
-                    println!("delete prefix {}, last_key {:?}", prefix_len, self.last_key);
+                    // println!("delete prefix {}, last_key {:?}", prefix_len, self.last_key);
                     key.extend_from_slice(self.last_key.split_at(prefix_len as usize).0);
                     key.append(&mut truncated_key);
                     self.last_key = key.clone();
@@ -1202,7 +1203,7 @@ where
             match *exec_result {
                 ExecResult::ChangePeer(ref cp) => {
                     self.region = cp.region.clone();
-                    self.common_prefix = common_prefix(&self.region);
+                    // self.common_prefix = common_prefix(&self.region);
                 }
                 ExecResult::ComputeHash { .. }
                 | ExecResult::VerifyHash { .. }
@@ -1211,7 +1212,7 @@ where
                 | ExecResult::IngestSst { .. } => {}
                 ExecResult::SplitRegion { ref derived, .. } => {
                     self.region = derived.clone();
-                    self.common_prefix = common_prefix(&self.region);
+                    // self.common_prefix = common_prefix(&self.region);
                     self.metrics.size_diff_hint = 0;
                     self.metrics.delete_keys_hint = 0;
                 }
@@ -1222,7 +1223,7 @@ where
                 }
                 ExecResult::CommitMerge { ref region, .. } => {
                     self.region = region.clone();
-                    self.common_prefix = common_prefix(&self.region);
+                    // self.common_prefix = common_prefix(&self.region);
                     self.last_merge_version = region.get_region_epoch().get_version();
                 }
                 ExecResult::RollbackMerge { ref region, .. } => {
@@ -1426,35 +1427,23 @@ where
         let key = keys::data_key(key);
         self.metrics.size_diff_hint += key.len() as i64;
         self.metrics.size_diff_hint += value.len() as i64;
-        if !req.get_put().get_cf().is_empty() {
-            let cf = req.get_put().get_cf();
-            // TODO: don't allow write preseved cfs.
-            if cf == CF_LOCK {
-                self.metrics.lock_cf_written_bytes += key.len() as u64;
-                self.metrics.lock_cf_written_bytes += value.len() as u64;
-            }
-            // TODO: check whether cf exists or not.
-            wb.put_cf(cf, &key, value).unwrap_or_else(|e| {
-                panic!(
-                    "{} failed to write ({}, {}) to cf {}: {:?}",
-                    self.tag,
-                    log_wrappers::Value::key(&key),
-                    log_wrappers::Value::value(&value),
-                    cf,
-                    e
-                )
-            });
-        } else {
-            wb.put(&key, value).unwrap_or_else(|e| {
-                panic!(
-                    "{} failed to write ({}, {}): {:?}",
-                    self.tag,
-                    log_wrappers::Value::key(&key),
-                    log_wrappers::Value::value(&value),
-                    e
-                );
-            });
+        let cf = cf_to_str(req.get_put().get_cf());
+        // TODO: don't allow write preseved cfs.
+        if cf == CF_LOCK {
+            self.metrics.lock_cf_written_bytes += key.len() as u64;
+            self.metrics.lock_cf_written_bytes += value.len() as u64;
         }
+        // TODO: check whether cf exists or not.
+        wb.put_cf(cf, &key, value).unwrap_or_else(|e| {
+            panic!(
+                "{} failed to write ({}, {}) to cf {}: {:?}",
+                self.tag,
+                log_wrappers::Value::key(&key),
+                log_wrappers::Value::value(&value),
+                cf,
+                e
+            )
+        });
         Ok(resp)
     }
 
@@ -1467,8 +1456,8 @@ where
         // since size_diff_hint is not accurate, so we just skip calculate the value size.
         self.metrics.size_diff_hint -= key.len() as i64;
         let resp = Response::default();
-        if !req.get_delete().get_cf().is_empty() {
-            let cf = req.get_delete().get_cf();
+      
+            let cf = cf_to_str(req.get_delete().get_cf());
             // TODO: check whether cf exists or not.
             wb.delete_cf(cf, &key).unwrap_or_else(|e| {
                 panic!(
@@ -1485,17 +1474,7 @@ where
             } else {
                 self.metrics.delete_keys_hint += 1;
             }
-        } else {
-            wb.delete(&key).unwrap_or_else(|e| {
-                panic!(
-                    "{} failed to delete {}: {}",
-                    self.tag,
-                    log_wrappers::Value::key(&key),
-                    e
-                )
-            });
-            self.metrics.delete_keys_hint += 1;
-        }
+      
 
         Ok(resp)
     }
@@ -1526,10 +1505,8 @@ where
         }
 
         let resp = Response::default();
-        let mut cf = req.get_delete_range().get_cf();
-        if cf.is_empty() {
-            cf = CF_DEFAULT;
-        }
+        let mut cf = cf_to_str(req.get_delete_range().get_cf());
+
         if ALL_CFS.iter().find(|x| **x == cf).is_none() {
             return Err(box_err!("invalid delete range command, cf: {:?}", cf));
         }
@@ -3299,7 +3276,7 @@ where
             // TODO: Update it only when `flush()` returns true.
             self.delegate.last_sync_apply_index = applied_index;
         }
-        println!("last applied key is {:?}", last_applied_key);
+        // println!("last applied key is {:?}", last_applied_key);
         if let Err(e) = snap_task.generate_and_schedule_snapshot::<EK>(
             apply_ctx.engine.snapshot(),
             self.delegate.applied_index_term,

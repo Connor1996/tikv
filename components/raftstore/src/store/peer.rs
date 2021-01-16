@@ -2877,9 +2877,10 @@ where
             }
         };
 
-        self.delta_rewrite(&mut req);
+        let saved = self.delta_rewrite(&mut req, poll_ctx);
 
         let data = req.write_to_bytes()?;
+        let all = data.len();
 
         // TODO: use local histogram metrics
         PEER_PROPOSE_LOG_SIZE_HISTOGRAM.observe(data.len() as f64);
@@ -2910,9 +2911,10 @@ where
         Ok(Either::Left(propose_index))
     }
 
-    fn delta_rewrite(
+    fn delta_rewrite<T>(
         &mut self,
         req: &mut RaftCmdRequest,
+        poll_ctx: &mut PollContext<EK, ER, T>,
     ) {
         if req.has_admin_request() {
             return;
@@ -2934,13 +2936,17 @@ where
             match r.get_cmd_type() {
                 CmdType::Get => { 
                     let key = &r.get_get().get_key()[prefix_len..];
+                    let total_origin = key.len();
                     if first {
                         first = false;
                         self.tmp_last_key = key.to_owned();
                         continue;
                     }
                     let len = prefix(&self.tmp_last_key, key);
-                    println!("get rewrite full {:?} to last_key: {:?}, prefix {}", key, self.tmp_last_key, len);
+                    let total_saved = len;
+                    poll_ctx.raft_metrics.propose.delta_saved.observe(total_saved as f64);
+                    poll_ctx.raft_metrics.propose.delta_origin.observe(total_origin as f64);
+                    // println!("get rewrite full {:?} to last_key: {:?}, prefix {}", key, self.tmp_last_key, len);
                     self.tmp_last_key = key.to_owned();
                     let truncated_key = r.get_get().get_key()[prefix_len+len..].to_vec();
                     r.mut_get().set_key(truncated_key);
@@ -2948,13 +2954,17 @@ where
                 },
                 CmdType::Put => {
                     let key = &r.get_put().get_key()[prefix_len..];
+                    let total_origin = key.len() + r.get_put().get_value().len();
                     if first {
                         first = false;
                         self.tmp_last_key = key.to_owned();
                         continue;
                     }
                     let len = prefix(&self.tmp_last_key, key);
-                    println!("[{}] put rewrite full {:?} to last_key: {:?}, prefix {}", self.tag, key, self.tmp_last_key, len);
+                    let total_saved = len;
+                    poll_ctx.raft_metrics.propose.delta_saved.observe(total_saved as f64);
+                    poll_ctx.raft_metrics.propose.delta_origin.observe(total_origin as f64);
+                    // println!("[{}] put rewrite full {:?} to last_key: {:?}, prefix {}", self.tag, key, self.tmp_last_key, len);
                     self.tmp_last_key = key.to_owned();
                     let truncated_key = r.get_put().get_key()[prefix_len+len..].to_vec();
                     r.mut_put().set_key(truncated_key);
@@ -2962,13 +2972,17 @@ where
                 }, 
                 CmdType::Delete  => {
                     let key = &r.get_delete().get_key()[prefix_len..];
+                    let total_origin = key.len();
                     if first {
                         first = false;
                         self.tmp_last_key = key.to_owned();
                         continue;
                     }
                     let len = prefix(&self.tmp_last_key, key);
-                    println!("delete rewrite full {:?} to last_key: {:?}, prefix {}", key, self.tmp_last_key, len);
+                    let total_saved = len;
+                    poll_ctx.raft_metrics.propose.delta_saved.observe(total_saved as f64);
+                    poll_ctx.raft_metrics.propose.delta_origin.observe(total_origin as f64);
+                    // println!("delete rewrite full {:?} to last_key: {:?}, prefix {}", key, self.tmp_last_key, len);
                     self.tmp_last_key = key.to_owned();
                     let truncated_key = r.get_delete().get_key()[prefix_len+len..].to_vec();
                     r.mut_delete().set_key(truncated_key);
@@ -2977,7 +2991,6 @@ where
                 _ => {},
             }
         }
-
         // 设置 is_restart 在 RaftRequestHeader
         // prefix
     }

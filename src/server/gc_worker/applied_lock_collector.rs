@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use txn_types::Key;
 
 use engine_rocks::RocksEngine;
-use engine_traits::{CfName, CF_LOCK};
+use engine_traits::{CfName, str_to_cf, CF_LOCK};
 use kvproto::kvrpcpb::LockInfo;
 use kvproto::raft_cmdpb::CmdType;
 use tikv_util::worker::{Builder as WorkerBuilder, Runnable, ScheduleError, Scheduler, Worker};
@@ -181,7 +181,7 @@ impl QueryObserver for LockObserver {
                 continue;
             }
             let put_request = req.get_put();
-            if put_request.get_cf() != CF_LOCK {
+            if put_request.get_cf() != str_to_cf(CF_LOCK) {
                 continue;
             }
 

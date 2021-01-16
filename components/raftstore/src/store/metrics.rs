@@ -321,7 +321,18 @@ lazy_static! {
             "Bucketed histogram of request wait time duration.",
             exponential_buckets(0.0005, 2.0, 20).unwrap()
         ).unwrap();
-
+    pub static ref DELTA_SAVED_HISTOGRAM: Histogram =
+        register_histogram!(
+            "tikv_raftstore_delta_saved_bytes",
+            "Bucketed histogram of request wait time duration.",
+            linear_buckets(1.0, 100.0, 40).unwrap()
+        ).unwrap();
+    pub static ref DELTA_ORIGIN_HISTOGRAM: Histogram =
+        register_histogram!(
+            "tikv_raftstore_delta_origin_bytes",
+            "Bucketed histogram of request wait time duration.",
+            linear_buckets(1.0, 100.0, 40).unwrap()
+        ).unwrap();
     pub static ref PEER_GC_RAFT_LOG_COUNTER: IntCounter =
         register_int_counter!(
             "tikv_raftstore_gc_raft_log_total",

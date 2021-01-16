@@ -20,6 +20,27 @@ pub fn name_to_cf(name: &str) -> Option<CfName> {
             return Some(c);
         }
     }
-
     None
+}
+
+pub fn str_to_cf(name: &str) -> u32 {
+    match name {
+        "default" => 0,
+        "lock" => 1,
+        "write" => 2,
+        "raft" =>3,
+        "ver_default" =>4,
+        _ => panic!(),
+    }
+}
+
+pub fn cf_to_str(cf_id: u32) -> &'static str {
+    match cf_id {
+        0 => "default",
+        1 => "lock",
+        2 => "write",
+        3 => "raft",
+        4 => "ver_default", 
+        _ => panic!()
+    }    
 }

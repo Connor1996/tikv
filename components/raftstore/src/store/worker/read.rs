@@ -25,7 +25,7 @@ use crate::store::{
 use crate::Result;
 
 use collections::HashMap;
-use engine_traits::{KvEngine, RaftEngine};
+use engine_traits::{KvEngine, cf_to_str,RaftEngine};
 use tikv_util::time::monotonic_raw_now;
 use tikv_util::time::{Instant, ThreadReadId};
 
@@ -42,9 +42,8 @@ pub trait ReadExecutor<E: KvEngine> {
 
         let engine = self.get_engine();
         let mut resp = Response::default();
-        let res = if !req.get_get().get_cf().is_empty() {
-            let cf = req.get_get().get_cf();
-            engine
+        let cf = cf_to_str(req.get_get().get_cf());
+        let res = engine
                 .get_value_cf(cf, &keys::data_key(key))
                 .unwrap_or_else(|e| {
                     panic!(
@@ -54,17 +53,8 @@ pub trait ReadExecutor<E: KvEngine> {
                         cf,
                         e
                     )
-                })
-        } else {
-            engine.get_value(&keys::data_key(key)).unwrap_or_else(|e| {
-                panic!(
-                    "[region {}] failed to get {}: {:?}",
-                    region.get_id(),
-                    log_wrappers::Value::key(key),
-                    e
-                )
-            })
-        };
+                });
+
         if let Some(res) = res {
             resp.mut_get().set_value(res.to_vec());
         }

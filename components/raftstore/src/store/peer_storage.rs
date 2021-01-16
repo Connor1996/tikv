@@ -887,8 +887,9 @@ where
             xs.iter().zip(ys).take_while(|(x, y)| x == y).count()
         };
 
-        let prefix_len = prefix(self.region.get_start_key(), self.region.get_end_key());
-        self.common_prefix = self.region.get_start_key()[..prefix_len].to_owned();
+        // let prefix_len = prefix(self.region.get_start_key(), self.region.get_end_key());
+        // self.common_prefix = self.region.get_start_key()[..prefix_len].to_owned();
+        self.common_prefix = vec![]
     }
 
     pub fn get_common_prefix(&self) -> &[u8] {
@@ -898,9 +899,9 @@ where
     pub fn get_last_key(&self) -> Vec<u8> {
         let low = self.truncated_index();
         let high = self.applied_index();
-        println!("peer id {}, low {}, high {}", self.peer_id, low, high);
+        // println!("peer id {}, low {}, high {}", self.peer_id, low, high);
         if low == high && low == RAFT_INIT_LOG_INDEX {
-            println!("return empty directly");
+            // println!("return empty directly");
             // mean it's newly created peer
             return vec![];
         }
@@ -926,7 +927,6 @@ where
             }
 
             if !data.is_empty() {
-                println!("data is {:?}", data);
                 let mut req : RaftCmdRequest = util::parse_data_at(data, index, &self.tag);
                 let mut first = true;
                 for r in req.mut_requests().iter_mut() {
@@ -1288,7 +1288,7 @@ where
 
         let last_key = snap_data.mut_meta().take_last_key();
 
-        println!("get snasphot with last key: {:?}", last_key);
+        // println!("get snasphot with last key: {:?}", last_key);
 
         let region_id = self.get_region_id();
 
