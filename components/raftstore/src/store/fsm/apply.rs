@@ -733,6 +733,8 @@ where
     region: Region,
     /// Peer_tag, "[region region_id] peer_id".
     tag: String,
+    last_key: Vec<u8>,
+    common_prefix: Vec<u8>,
 
     /// If the delegate should be stopped from polling.
     /// A delegate can be stopped in conf change, merge or requested by destroy message.
@@ -782,9 +784,19 @@ where
     EK: KvEngine,
 {
     fn from_registration(reg: Registration) -> ApplyDelegate<EK> {
+        let common_prefix = |r: &Region| -> Vec<u8> {
+            let prefix = |xs: &[u8], ys: &[u8]| -> usize {
+                xs.iter().zip(ys).take_while(|(x, y)| x == y).count()
+            };
+            let prefix_len = prefix(r.get_start_key(), r.get_end_key());
+            r.get_start_key()[..prefix_len].to_vec()
+        };
+
         ApplyDelegate {
             id: reg.id,
             tag: format!("[region {}] {}", reg.region.get_id(), reg.id),
+            common_prefix: common_prefix(&reg.region),
+            last_key: reg.last_key,
             region: reg.region,
             pending_remove: false,
             last_sync_apply_index: reg.apply_state.get_applied_index(),
@@ -903,6 +915,47 @@ where
             );
         });
     }
+    
+    fn restore_delta(&mut self, req: &mut RaftCmdRequest) {
+        for r in req.mut_requests().iter_mut() {
+            match r.get_cmd_type() {
+                CmdType::Get => {
+                    let prefix_len = r.get_get().get_prefix_len();
+                    let mut truncated_key = r.mut_get().take_key();
+                    let mut key = self.common_prefix.clone();
+                    key.extend_from_slice(self.last_key.split_at(prefix_len as usize).0);
+                    key.append(&mut truncated_key);
+                    self.last_key = key.clone();
+                    r.mut_get().set_key(key);
+                    r.mut_get().set_prefix_len(0);
+                },
+                CmdType::Put => {
+                    let prefix_len = r.get_put().get_prefix_len();
+                    let mut truncated_key = r.mut_put().take_key();
+                    let mut key = self.common_prefix.clone();
+                    println!("prefix {}, last_key {:?}", prefix_len, self.last_key);
+                    key.extend_from_slice(self.last_key.split_at(prefix_len as usize).0);
+                    key.append(&mut truncated_key);
+                    
+                    self.last_key = key.clone();
+                    r.mut_put().set_key(key);
+                    r.mut_put().set_prefix_len(0);
+                }, 
+                CmdType::Delete  => {
+                    let prefix_len = r.get_delete().get_prefix_len();
+                    let mut truncated_key = r.mut_delete().take_key();
+                    let mut key = self.common_prefix.clone();
+                    key.extend_from_slice(self.last_key.split_at(prefix_len as usize).0);
+                    key.append(&mut truncated_key);
+                    self.last_key = key.clone();
+                    
+                    r.mut_delete().set_key(key);
+                    r.mut_delete().set_prefix_len(0);
+                }
+                _ => {},
+            }
+        }
+    }
 
     fn handle_raft_entry_normal<W: WriteBatch<EK>>(
         &mut self,
@@ -918,7 +971,9 @@ where
         let data = entry.get_data();
 
         if !data.is_empty() {
-            let cmd = util::parse_data_at(data, index, &self.tag);
+            let mut cmd = util::parse_data_at(data, index, &self.tag);
+            // rewrite here?
+            self.restore_delta(&mut cmd);
 
             if should_write_to_engine(&cmd) || apply_ctx.kv_wb().should_write_to_engine() {
                 apply_ctx.commit(self);
@@ -1134,11 +1189,19 @@ where
 
         self.apply_state = exec_ctx.apply_state;
         self.applied_index_term = term;
-
+        
+        let common_prefix = |r: &Region| -> Vec<u8> {
+            let prefix = |xs: &[u8], ys: &[u8]| -> usize {
+                xs.iter().zip(ys).take_while(|(x, y)| x == y).count()
+            };
+            let prefix_len = prefix(r.get_start_key(), r.get_end_key());
+            r.get_start_key()[..prefix_len].to_vec()
+        };
         if let ApplyResult::Res(ref exec_result) = exec_result {
             match *exec_result {
                 ExecResult::ChangePeer(ref cp) => {
                     self.region = cp.region.clone();
+                    self.common_prefix = common_prefix(&self.region);
                 }
                 ExecResult::ComputeHash { .. }
                 | ExecResult::VerifyHash { .. }
@@ -1147,19 +1210,23 @@ where
                 | ExecResult::IngestSst { .. } => {}
                 ExecResult::SplitRegion { ref derived, .. } => {
                     self.region = derived.clone();
+                    self.common_prefix = common_prefix(&self.region);
                     self.metrics.size_diff_hint = 0;
                     self.metrics.delete_keys_hint = 0;
                 }
                 ExecResult::PrepareMerge { ref region, .. } => {
                     self.region = region.clone();
+                    self.common_prefix = common_prefix(&self.region);
                     self.is_merging = true;
                 }
                 ExecResult::CommitMerge { ref region, .. } => {
                     self.region = region.clone();
+                    self.common_prefix = common_prefix(&self.region);
                     self.last_merge_version = region.get_region_epoch().get_version();
                 }
                 ExecResult::RollbackMerge { ref region, .. } => {
                     self.region = region.clone();
+                    self.common_prefix = common_prefix(&self.region);
                     self.is_merging = false;
                 }
             }
@@ -2702,10 +2769,17 @@ pub struct Registration {
     pub region: Region,
     pub pending_request_snapshot_count: Arc<AtomicUsize>,
     pub is_merging: bool,
+    pub last_key: Vec<u8>,
 }
 
 impl Registration {
-    pub fn new<EK: KvEngine, ER: RaftEngine>(peer: &Peer<EK, ER>) -> Registration {
+    pub fn new<EK: KvEngine, ER: RaftEngine>(peer: &Peer<EK, ER>, new_peer: bool) -> Registration {
+        let last_key = if !new_peer {
+            peer.get_store().get_last_key()
+        } else {
+            vec![]
+        };
+
         Registration {
             id: peer.peer_id(),
             term: peer.term(),
@@ -2714,6 +2788,7 @@ impl Registration {
             region: peer.region().clone(),
             pending_request_snapshot_count: peer.pending_request_snapshot_count.clone(),
             is_merging: peer.pending_merge_state.is_some(),
+            last_key,
         }
     }
 }
@@ -2876,8 +2951,8 @@ where
         }
     }
 
-    pub fn register<ER: RaftEngine>(peer: &Peer<EK, ER>) -> Msg<EK> {
-        Msg::Registration(Registration::new(peer))
+    pub fn register<ER: RaftEngine>(peer: &Peer<EK, ER>, new_peer: bool) -> Msg<EK> {
+        Msg::Registration(Registration::new(peer, new_peer))
     }
 
     pub fn destroy(region_id: u64, merge_from_snapshot: bool) -> Msg<EK> {
@@ -2974,7 +3049,7 @@ where
     fn from_peer<ER: RaftEngine>(
         peer: &Peer<EK, ER>,
     ) -> (LooseBoundedSender<Msg<EK>>, Box<ApplyFsm<EK>>) {
-        let reg = Registration::new(peer);
+        let reg = Registration::new(peer, false);
         ApplyFsm::from_registration(reg)
     }
 

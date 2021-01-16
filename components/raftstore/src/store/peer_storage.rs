@@ -15,6 +15,7 @@ use kvproto::metapb::{self, Region};
 use kvproto::raft_serverpb::{
     MergeState, PeerState, RaftApplyState, RaftLocalState, RaftSnapshotData, RegionLocalState,
 };
+use kvproto::raft_cmdpb::{CmdType, RaftCmdRequest};
 use protobuf::Message;
 use raft::eraftpb::{ConfState, Entry, HardState, Snapshot};
 use raft::{self, Error as RaftError, RaftState, Ready, Storage, StorageError};
@@ -603,6 +604,7 @@ where
 
     peer_id: u64,
     region: metapb::Region,
+    common_prefix: Vec<u8>,
     raft_state: RaftLocalState,
     apply_state: RaftApplyState,
     applied_index_term: u64,
@@ -690,6 +692,7 @@ where
             engines,
             peer_id,
             region: region.clone(),
+            common_prefix: vec![],
             raft_state,
             apply_state,
             snap_state: RefCell::new(SnapState::Relax),
@@ -880,6 +883,149 @@ where
 
     pub fn set_region(&mut self, region: metapb::Region) {
         self.region = region;
+        let prefix = |xs: &[u8], ys: &[u8]| -> usize {
+            xs.iter().zip(ys).take_while(|(x, y)| x == y).count()
+        };
+
+        let prefix_len = prefix(self.region.get_start_key(), self.region.get_end_key());
+        self.common_prefix = self.region.get_start_key()[..prefix_len].to_owned();
+    }
+
+    pub fn get_common_prefix(&self) -> &[u8] {
+        &self.common_prefix
+    }
+
+    pub fn get_last_key(&self) -> Vec<u8> {
+        let low = self.truncated_index();
+        let high = self.applied_index();
+
+        if low == high {
+            // mean it's newly created peer
+            return vec![];
+        }
+
+        let mut ents = Vec::with_capacity((high - low) as usize);
+        self.engines.raft.fetch_entries_to(
+            self.get_region_id(),
+            low + 1,
+            high + 1,
+            None,
+            &mut ents,
+        ).unwrap();
+
+        let mut found = false;
+        let mut found_index = 0;
+        let mut full_key = vec![];
+        for ent in ents.iter().rev() {
+            let index = ent.get_index();
+            let data = ent.get_data();
+
+            if !data.is_empty() {
+                let mut req : RaftCmdRequest = util::parse_data_at(data, index, &self.tag);
+                let mut first = true;
+                for r in req.mut_requests().iter_mut() {
+                    match r.get_cmd_type() {
+                        CmdType::Get => {
+                            let prefix_len = r.get_get().get_prefix_len();
+                            if prefix_len == 0 {
+                                full_key = r.mut_get().take_key();
+                                found = true;
+                            } else if first {
+                                break;
+                            } else {
+                                full_key.truncate(prefix_len as usize);
+                                full_key.append(&mut r.mut_get().take_key());
+                            }
+                            first = false;
+                        },
+                        CmdType::Put => {
+                            let prefix_len = r.get_put().get_prefix_len();
+                            if prefix_len == 0 {
+                                full_key = r.mut_put().take_key();
+                                break;
+                            } else if first {
+                                break;
+                            } else {
+                                full_key.truncate(prefix_len as usize);
+                                full_key.append(&mut r.mut_put().take_key());
+                            }
+                            first = false;
+                        }, 
+                        CmdType::Delete => {
+                            let prefix_len = r.get_delete().get_prefix_len();
+                            if prefix_len == 0 {
+                                full_key = r.mut_delete().take_key();
+                                break;
+                            } else if first {
+                                break;
+                            } else {
+                                full_key.truncate(prefix_len as usize);
+                                full_key.append(&mut r.mut_delete().take_key());
+                            }
+                            first = false;
+                        }
+                        _ => { continue; }
+                    }
+                }
+
+                if found {
+                    found_index = index;
+                    break;
+                }
+            }
+        }
+
+        if !found {
+            // fallback
+            // if there is no restart point, such as right after snapshot
+            panic!("not implement");
+        } else {
+            for ent in ents.iter() {
+                let index = ent.get_index();
+                if index <= found_index {
+                    continue;
+                }
+                let data = ent.get_data();
+
+                if !data.is_empty() {
+                    let mut req : RaftCmdRequest = util::parse_data_at(data, index, &self.tag);
+                    for r in req.mut_requests().iter_mut() {
+                        match r.get_cmd_type() {
+                            CmdType::Get => {
+                                let prefix_len = r.get_get().get_prefix_len();
+                                if prefix_len == 0 {
+                                    panic!("should no more restart point");
+                                } else {
+                                    full_key.truncate(prefix_len as usize);
+                                    full_key.append(&mut r.mut_get().take_key());
+                                }
+                            },
+                            CmdType::Put => {
+                                let prefix_len = r.get_put().get_prefix_len();
+                                if prefix_len == 0 {
+                                    panic!("should no more restart point");
+                                }else {
+                                    full_key.truncate(prefix_len as usize);
+                                    full_key.append(&mut r.mut_put().take_key());
+                                }
+                            }, 
+                            CmdType::Delete => {
+                                let prefix_len = r.get_delete().get_prefix_len();
+                                if prefix_len == 0 {
+                                    panic!("should no more restart point");
+                                } else {
+                                    full_key.truncate(prefix_len as usize);
+                                    full_key.append(&mut r.mut_delete().take_key());
+                                }
+                            }
+                            _ => { continue; }
+                        }
+                    }
+                }
+            }
+        }
+
+        return full_key;
     }
 
     pub fn raw_snapshot(&self) -> EK::Snapshot {

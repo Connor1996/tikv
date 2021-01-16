@@ -385,6 +385,11 @@ where
     /// The Peer meta information.
     pub peer: metapb::Peer,
 
+    /// Delta key encoding related
+    last_key: Vec<u8>,
+    tmp_last_key: Vec<u8>,
+    restart: u64,
+   
     /// The Raft state machine of this Peer.
     pub raft_group: RawNode<PeerStorage<EK, ER>>,
     /// The cache of meta information for Region's other Peers.
@@ -547,6 +552,9 @@ where
             peer,
             region_id: region.get_id(),
             raft_group,
+            last_key: vec![],
+            tmp_last_key: vec![],
+            restart: 0,
             proposals: ProposalQueue::new(tag.clone()),
             pending_reads: Default::default(),
             peer_cache: RefCell::new(HashMap::default()),
@@ -660,9 +668,10 @@ where
 
     /// Register self to apply_scheduler so that the peer is then usable.
     /// Also trigger `RegionChangeEvent::Create` here.
-    pub fn activate<T>(&self, ctx: &PollContext<EK, ER, T>) {
+    pub fn activate<T>(&self, ctx: &PollContext<EK, ER, T>, new_peer: bool) {
+        // apply snapshot or create peer
         ctx.apply_router
-            .schedule_task(self.region_id, ApplyTask::register(self));
+            .schedule_task(self.region_id, ApplyTask::register(self, new_peer));
 
         ctx.coprocessor_host.on_region_changed(
             self.region(),
@@ -1347,6 +1356,8 @@ where
                     // A more recent read may happen on the old leader. So max ts should
                     // be updated after a peer becomes leader.
                     self.require_updating_max_ts(&ctx.pd_scheduler);
+                    self.last_key = vec![];
+                    self.restart = 0;
                 }
                 StateRole::Follower => {
                     self.leader_lease.expire();
@@ -1748,7 +1759,7 @@ where
         }
 
         if apply_snap_result.is_some() {
-            self.activate(ctx);
+            self.activate(ctx, false);
             let mut meta = ctx.store_meta.lock().unwrap();
             meta.readers
                 .insert(self.region_id, ReadDelegate::from_peer(self));
@@ -2866,6 +2877,8 @@ where
             }
         };
 
+        self.delta_rewrite(&mut req);
+
         let data = req.write_to_bytes()?;
 
         // TODO: use local histogram metrics
@@ -2888,12 +2901,87 @@ where
             // or transferring leader. Both cases can be considered as NotLeader error.
             return Err(Error::NotLeader(self.region_id, None));
         }
+        self.delta_advance();
 
         if ctx.contains(ProposalContext::PREPARE_MERGE) {
             self.last_proposed_prepare_merge_idx = propose_index;
         }
 
         Ok(Either::Left(propose_index))
+    }
+
+    fn delta_rewrite(
+        &mut self,
+        req: &mut RaftCmdRequest,
+    ) {
+        if req.has_admin_request() {
+            return;
+        }
+
+        let prefix_len = self.raft_group.store().get_common_prefix().len();
+
+        let cfg_gc = 50;
+        let mut first = self.restart % cfg_gc == 0;
+
+        let prefix = |xs: &[u8], ys: &[u8]| -> usize {
+            xs.iter().zip(ys)
+              .take_while(|(x, y)| x == y)
+              .count()
+        };
+
+        self.tmp_last_key = self.last_key.clone();
+        for r in req.mut_requests().iter_mut() {
+            match r.get_cmd_type() {
+                CmdType::Get => { 
+                    let key = &r.get_get().get_key()[prefix_len..];
+                    if first {
+                        first = false;
+                        self.tmp_last_key = key.to_owned();
+                        continue;
+                    }
+                    let len = prefix(&self.tmp_last_key, key);
+                    self.tmp_last_key = key.to_owned();
+                    let truncated_key = r.get_get().get_key()[prefix_len+len..].to_vec();
+                    r.mut_get().set_key(truncated_key);
+                    r.mut_get().set_prefix_len(len as u32);
+                },
+                CmdType::Put => {
+                    let key = &r.get_put().get_key()[prefix_len..];
+                    if first {
+                        first = false;
+                        self.tmp_last_key = key.to_owned();
+                        continue;
+                    }
+                    let len = prefix(&self.tmp_last_key, key);
+                    self.tmp_last_key = key.to_owned();
+                    let truncated_key = r.get_put().get_key()[prefix_len+len..].to_vec();
+                    r.mut_put().set_key(truncated_key);
+                    r.mut_put().set_prefix_len(len as u32);
+                }, 
+                CmdType::Delete  => {
+                    let key = &r.get_delete().get_key()[prefix_len..];
+                    if first {
+                        first = false;
+                        self.tmp_last_key = key.to_owned();
+                        continue;
+                    }
+                    let len = prefix(&self.tmp_last_key, key);
+                    self.tmp_last_key = key.to_owned();
+                    let truncated_key = r.get_delete().get_key()[prefix_len+len..].to_vec();
+                    r.mut_delete().set_key(truncated_key);
+                    r.mut_delete().set_prefix_len(len as u32);
+                }
+                _ => {},
+            }
+        }
+
+        // 设置 is_restart 在 RaftRequestHeader
+        // prefix
+    }
+
+    fn delta_advance(&mut self) {
+        self.restart += 1;
+        self.last_key = self.tmp_last_key.clone();
     }
 
     fn execute_transfer_leader<T>(

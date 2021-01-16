@@ -2311,7 +2311,7 @@ where
                 new_peer.peer.heartbeat_pd(self.ctx);
             }
 
-            new_peer.peer.activate(self.ctx);
+            new_peer.peer.activate(self.ctx, true);
             meta.regions.insert(new_region_id, new_region.clone());
             meta.readers
                 .insert(new_region_id, ReadDelegate::from_peer(new_peer.get_peer()));
