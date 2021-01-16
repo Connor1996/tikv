@@ -92,6 +92,7 @@ pub fn check_key_in_region(key: &[u8], region: &metapb::Region) -> Result<()> {
     if key >= start_key && (end_key.is_empty() || key < end_key) {
         Ok(())
     } else {
+        // panic!("not in region");
         Err(Error::KeyNotInRegion(key.to_vec(), region.clone()))
     }
 }

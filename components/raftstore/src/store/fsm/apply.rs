@@ -925,6 +925,7 @@ where
                     let mut key = self.common_prefix.clone();
                     key.extend_from_slice(self.last_key.split_at(prefix_len as usize).0);
                     key.append(&mut truncated_key);
+                    println!("get prefix {}, last_key {:?} to full {:?}", prefix_len, self.last_key, key);
                     self.last_key = key.clone();
                     r.mut_get().set_key(key);
                     r.mut_get().set_prefix_len(0);
@@ -933,9 +934,9 @@ where
                     let prefix_len = r.get_put().get_prefix_len();
                     let mut truncated_key = r.mut_put().take_key();
                     let mut key = self.common_prefix.clone();
-                    println!("prefix {}, last_key {:?}", prefix_len, self.last_key);
                     key.extend_from_slice(self.last_key.split_at(prefix_len as usize).0);
                     key.append(&mut truncated_key);
+                    println!("[{}] put prefix {}, last_key {:?} to full {:?}, common_prefix {:?}", self.tag, prefix_len, self.last_key, key, self.common_prefix);
                     
                     self.last_key = key.clone();
                     r.mut_put().set_key(key);
@@ -945,6 +946,7 @@ where
                     let prefix_len = r.get_delete().get_prefix_len();
                     let mut truncated_key = r.mut_delete().take_key();
                     let mut key = self.common_prefix.clone();
+                    println!("delete prefix {}, last_key {:?}", prefix_len, self.last_key);
                     key.extend_from_slice(self.last_key.split_at(prefix_len as usize).0);
                     key.append(&mut truncated_key);
                     self.last_key = key.clone();
@@ -972,7 +974,6 @@ where
 
         if !data.is_empty() {
             let mut cmd = util::parse_data_at(data, index, &self.tag);
-            // rewrite here?
             self.restore_delta(&mut cmd);
 
             if should_write_to_engine(&cmd) || apply_ctx.kv_wb().should_write_to_engine() {
@@ -2853,6 +2854,7 @@ impl GenSnapTask {
         kv_snap: EK::Snapshot,
         last_applied_index_term: u64,
         last_applied_state: RaftApplyState,
+        last_applied_key: Vec<u8>,
         region_sched: &Scheduler<RegionTask<EK::Snapshot>>,
     ) -> Result<()>
     where
@@ -2864,6 +2866,7 @@ impl GenSnapTask {
             for_balance: self.for_balance,
             last_applied_index_term,
             last_applied_state,
+            last_applied_key,
             // This snapshot may be held for a long time, which may cause too many
             // open files in rocksdb.
             kv_snap,
@@ -3273,6 +3276,7 @@ where
             return;
         }
         let applied_index = self.delegate.apply_state.get_applied_index();
+        let last_applied_key = self.delegate.last_key.clone();
         let mut need_sync = apply_ctx
             .apply_res
             .iter()
@@ -3295,11 +3299,12 @@ where
             // TODO: Update it only when `flush()` returns true.
             self.delegate.last_sync_apply_index = applied_index;
         }
-
+        println!("last applied key is {:?}", last_applied_key);
         if let Err(e) = snap_task.generate_and_schedule_snapshot::<EK>(
             apply_ctx.engine.snapshot(),
             self.delegate.applied_index_term,
             self.delegate.apply_state.clone(),
+            last_applied_key,
             &apply_ctx.region_scheduler,
         ) {
             error!(

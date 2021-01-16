@@ -2940,6 +2940,7 @@ where
                         continue;
                     }
                     let len = prefix(&self.tmp_last_key, key);
+                    println!("get rewrite full {:?} to last_key: {:?}, prefix {}", key, self.tmp_last_key, len);
                     self.tmp_last_key = key.to_owned();
                     let truncated_key = r.get_get().get_key()[prefix_len+len..].to_vec();
                     r.mut_get().set_key(truncated_key);
@@ -2953,6 +2954,7 @@ where
                         continue;
                     }
                     let len = prefix(&self.tmp_last_key, key);
+                    println!("[{}] put rewrite full {:?} to last_key: {:?}, prefix {}", self.tag, key, self.tmp_last_key, len);
                     self.tmp_last_key = key.to_owned();
                     let truncated_key = r.get_put().get_key()[prefix_len+len..].to_vec();
                     r.mut_put().set_key(truncated_key);
@@ -2966,6 +2968,7 @@ where
                         continue;
                     }
                     let len = prefix(&self.tmp_last_key, key);
+                    println!("delete rewrite full {:?} to last_key: {:?}, prefix {}", key, self.tmp_last_key, len);
                     self.tmp_last_key = key.to_owned();
                     let truncated_key = r.get_delete().get_key()[prefix_len+len..].to_vec();
                     r.mut_delete().set_key(truncated_key);

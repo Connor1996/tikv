@@ -2012,7 +2012,7 @@ dependencies = [
 [[package]]
 name = "kvproto"
 version = "0.0.2"
-source = "git+https://github.com/Connor1996/kvproto?branch=delta-compression#07de5fe7899a0869640cc2cde7e758782a99762a"
+source = "git+https://github.com/Connor1996/kvproto?branch=delta-compression#af485a4b09aa1cf6020fc5e5cf425b8bbb24b5a4"
 dependencies = [
  "futures 0.3.7",
  "grpcio",

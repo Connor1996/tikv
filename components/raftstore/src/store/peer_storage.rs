@@ -13,11 +13,11 @@ use engine_traits::{Engines, KvEngine, Mutable, Peekable};
 use keys::{self, enc_end_key, enc_start_key};
 use kvproto::metapb::{self, Region};
 use kvproto::raft_serverpb::{
-    MergeState, PeerState, RaftApplyState, RaftLocalState, RaftSnapshotData, RegionLocalState,
+    MergeState, PeerState, RaftApplyState, RaftLocalState, RaftSnapshotData, RegionLocalState, 
 };
 use kvproto::raft_cmdpb::{CmdType, RaftCmdRequest};
 use protobuf::Message;
-use raft::eraftpb::{ConfState, Entry, HardState, Snapshot};
+use raft::eraftpb::{ConfState, Entry, EntryType, HardState, Snapshot};
 use raft::{self, Error as RaftError, RaftState, Ready, Storage, StorageError};
 
 use crate::store::fsm::GenSnapTask;
@@ -898,8 +898,9 @@ where
     pub fn get_last_key(&self) -> Vec<u8> {
         let low = self.truncated_index();
         let high = self.applied_index();
-
-        if low == high {
+        println!("peer id {}, low {}, high {}", self.peer_id, low, high);
+        if low == high && low == RAFT_INIT_LOG_INDEX {
+            println!("return empty directly");
             // mean it's newly created peer
             return vec![];
         }
@@ -920,7 +921,12 @@ where
             let index = ent.get_index();
             let data = ent.get_data();
 
+            if ent.get_entry_type() != EntryType::EntryNormal {
+                continue;
+            }
+
             if !data.is_empty() {
+                println!("data is {:?}", data);
                 let mut req : RaftCmdRequest = util::parse_data_at(data, index, &self.tag);
                 let mut first = true;
                 for r in req.mut_requests().iter_mut() {
@@ -978,48 +984,46 @@ where
         if !found {
             // fallback
             // if there is no restart point, such as right after snapshot
-            panic!("not implement");
-        } else {
-            for ent in ents.iter() {
-                let index = ent.get_index();
-                if index <= found_index {
-                    continue;
-                }
-                let data = ent.get_data();
+            full_key = self.apply_state.get_truncated_state().get_last_key().to_vec();
+            found_index = 0;
+        }
 
-                if !data.is_empty() {
-                    let mut req : RaftCmdRequest = util::parse_data_at(data, index, &self.tag);
-                    for r in req.mut_requests().iter_mut() {
-                        match r.get_cmd_type() {
-                            CmdType::Get => {
-                                let prefix_len = r.get_get().get_prefix_len();
-                                if prefix_len == 0 {
-                                    panic!("should no more restart point");
-                                } else {
-                                    full_key.truncate(prefix_len as usize);
-                                    full_key.append(&mut r.mut_get().take_key());
-                                }
-                            },
-                            CmdType::Put => {
-                                let prefix_len = r.get_put().get_prefix_len();
-                                if prefix_len == 0 {
-                                    panic!("should no more restart point");
-                                }else {
-                                    full_key.truncate(prefix_len as usize);
-                                    full_key.append(&mut r.mut_put().take_key());
-                                }
-                            }, 
-                            CmdType::Delete => {
-                                let prefix_len = r.get_delete().get_prefix_len();
-                                if prefix_len == 0 {
-                                    panic!("should no more restart point");
-                                } else {
-                                    full_key.truncate(prefix_len as usize);
-                                    full_key.append(&mut r.mut_delete().take_key());
-                                }
-                            }
-                            _ => { continue; }
+        for ent in ents.iter() {
+            let index = ent.get_index();
+            if index <= found_index {
+                continue;
+            }
+            let data = ent.get_data();
+
+            if ent.get_entry_type() != EntryType::EntryNormal {
+                continue;
+            }
+
+            if !data.is_empty() {
+                let mut req : RaftCmdRequest = util::parse_data_at(data, index, &self.tag);
+                for r in req.mut_requests().iter_mut() {
+                    match r.get_cmd_type() {
+                        CmdType::Get => {
+                            let prefix_len = r.get_get().get_prefix_len();
+                                full_key.truncate(prefix_len as usize);
+                                full_key.append(&mut r.mut_get().take_key());
+                            
+                        },
+                        CmdType::Put => {
+                            let prefix_len = r.get_put().get_prefix_len();
+      
+                                full_key.truncate(prefix_len as usize);
+                                full_key.append(&mut r.mut_put().take_key());
+
+                        }, 
+                        CmdType::Delete => {
+                            let prefix_len = r.get_delete().get_prefix_len();
+
+                                full_key.truncate(prefix_len as usize);
+                                full_key.append(&mut r.mut_delete().take_key());
+
                         }
+                        _ => { continue; }
                     }
                 }
             }
@@ -1282,6 +1286,10 @@ where
         let mut snap_data = RaftSnapshotData::default();
         snap_data.merge_from_bytes(snap.get_data())?;
 
+        let last_key = snap_data.mut_meta().take_last_key();
+
+        println!("get snasphot with last key: {:?}", last_key);
+
         let region_id = self.get_region_id();
 
         let region = snap_data.take_region();
@@ -1315,6 +1323,7 @@ where
         ctx.apply_state
             .mut_truncated_state()
             .set_term(snap.get_metadata().get_term());
+        ctx.apply_state.mut_truncated_state().set_last_key(last_key);
 
         info!(
             "apply snapshot with state ok";
@@ -1672,6 +1681,7 @@ pub fn do_snapshot<E>(
     region_id: u64,
     last_applied_index_term: u64,
     last_applied_state: RaftApplyState,
+    last_applied_key: Vec<u8>,
     for_balance: bool,
 ) -> raft::Result<Snapshot>
 where
@@ -1742,6 +1752,7 @@ where
         &mut stat,
     )?;
     snap_data.mut_meta().set_for_balance(for_balance);
+    snap_data.mut_meta().set_last_key(last_applied_key);
     let v = snap_data.write_to_bytes()?;
     snapshot.set_data(v);
 
@@ -2148,6 +2159,7 @@ mod tests {
             engines.kv.clone().snapshot(),
             entry.get_term(),
             apply_state,
+            vec![], // don't conside the test now
             sched,
         )
     }
