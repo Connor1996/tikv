@@ -3076,12 +3076,14 @@ mod tests {
 
     use super::*;
     use crate::storage::config::StorageConfigManger;
+    use crossbeam::channel::{unbounded, Receiver};
     use engine_rocks::raw_util::new_engine_opt;
     use engine_traits::DBOptions as DBOptionsTrait;
     use raft_log_engine::RecoveryMode;
     use raftstore::coprocessor::region_info_accessor::MockRegionInfoProvider;
     use slog::Level;
     use std::sync::Arc;
+    use std::time::Duration;
 
     #[test]
     fn test_check_critical_cfg_with() {
@@ -3342,7 +3344,7 @@ mod tests {
         );
     }
 
-    fn new_engines(cfg: TiKvConfig) -> (RocksEngine, ConfigController) {
+    fn new_engines(cfg: TiKvConfig) -> (RocksEngine, ConfigController, Receiver<Option<Duration>>) {
         let engine = RocksEngine::from_db(Arc::new(
             new_engine_opt(
                 &cfg.storage.data_dir,
@@ -3361,11 +3363,12 @@ mod tests {
             Module::Rocksdb,
             Box::new(DBConfigManger::new(engine.clone(), DBType::Kv, shared)),
         );
+        let (tx, rx) = unbounded();
         cfg_controller.register(
             Module::Storage,
-            Box::new(StorageConfigManger::new(engine.clone(), shared)),
+            Box::new(StorageConfigManger::new(engine.clone(), shared, tx)),
         );
-        (engine, cfg_controller)
+        (engine, cfg_controller, rx)
     }
 
     #[test]
@@ -3380,7 +3383,7 @@ mod tests {
         cfg.rocksdb.rate_limiter_auto_tuned = false;
         cfg.storage.block_cache.shared = false;
         cfg.validate().unwrap();
-        let (db, cfg_controller) = new_engines(cfg);
+        let (db, cfg_controller, _) = new_engines(cfg);
 
         // update max_background_jobs
         assert_eq!(db.get_db_options().get_max_background_jobs(), 4);
@@ -3451,7 +3454,7 @@ mod tests {
         // vanilla limiter does not support dynamically changing auto-tuned mode.
         cfg.rocksdb.rate_limiter_auto_tuned = true;
         cfg.validate().unwrap();
-        let (db, cfg_controller) = new_engines(cfg);
+        let (db, cfg_controller, _) = new_engines(cfg);
 
         // update rate_limiter_auto_tuned
         assert_eq!(
@@ -3473,7 +3476,7 @@ mod tests {
         let (mut cfg, _dir) = TiKvConfig::with_tmp().unwrap();
         cfg.storage.block_cache.shared = true;
         cfg.validate().unwrap();
-        let (db, cfg_controller) = new_engines(cfg);
+        let (db, cfg_controller, _) = new_engines(cfg);
 
         // Can not update shared block cache through rocksdb module
         assert!(cfg_controller
@@ -3509,6 +3512,21 @@ mod tests {
         assert_eq!(diff.len(), 1);
         assert_eq!(diff[0].0.as_str(), "blob_run_mode");
         assert_eq!(diff[0].1.as_str(), "kFallback");
+    }
+
+    #[test]
+    fn test_change_ttl_check_poll_interval() {
+        let (mut cfg, _dir) = TiKvConfig::with_tmp().unwrap();
+        cfg.storage.block_cache.shared = true;
+        cfg.validate().unwrap();
+        let (_, cfg_controller, rx) = new_engines(cfg);
+
+        // Can not update shared block cache through rocksdb module
+        cfg_controller
+            .update_config("storage.ttl_check_poll_interval", "10s")
+            .unwrap();
+
+        assert_eq!(rx.recv(), Ok(Some(Duration::from_secs(10))),);
     }
 
     #[test]

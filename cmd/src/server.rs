@@ -25,7 +25,9 @@ use engine_rocks::{
     encryption::get_env as get_encrypted_env, file_system::get_env as get_inspected_env,
     RocksEngine,
 };
-use engine_traits::{compaction_job::CompactionJobInfo, Engines, RaftEngine, CF_DEFAULT, CF_WRITE};
+use engine_traits::{
+    compaction_job::CompactionJobInfo, Engines, KvEngine, RaftEngine, CF_DEFAULT, CF_WRITE,
+};
 use error_code::ErrorCodeExt;
 use file_system::{
     set_io_rate_limiter, BytesFetcher, IORateLimiter, MetricsManager as IOMetricsManager,
@@ -44,7 +46,7 @@ use raft_log_engine::RaftLogEngine;
 use raftstore::{
     coprocessor::{
         config::SplitCheckConfigManager, BoxConsistencyCheckObserver, ConsistencyCheckMethod,
-        CoprocessorHost, RawConsistencyCheckObserver, RegionInfoAccessor,
+        CoprocessorHost, RawConsistencyCheckObserver, RegionInfoAccessor, RegionInfoProvider,
     },
     router::ServerRaftStoreRouter,
     store::{
@@ -70,12 +72,14 @@ use tikv::{
         resolve,
         service::{DebugService, DiagnosticsService},
         status_server::StatusServer,
+        ttl::TTLChecker,
         Node, RaftKv, Server, CPU_CORES_QUOTA_GAUGE, DEFAULT_CLUSTER_ID, GRPC_THREAD_PREFIX,
     },
     storage::{
         self,
         config::{StorageConfigManger, MAX_RESERVED_SPACE_GB},
         mvcc::MvccConsistencyCheckObserver,
+        Engine,
     },
 };
 use tikv_util::{
@@ -121,8 +125,7 @@ pub fn run_tikv(config: TiKvConfig) {
             tikv.init_encryption();
             let engines = tikv.init_raw_engines();
             tikv.init_engines(engines);
-            let gc_worker = tikv.init_gc_worker();
-            let server_config = tikv.init_servers(&gc_worker);
+            let server_config = tikv.init_servers();
             tikv.register_services();
             tikv.init_metrics_flusher(fetcher);
             tikv.run_server(server_config);
@@ -452,15 +455,6 @@ impl<ER: RaftEngine> TiKVServer<ER> {
             engines.kv.clone(),
         );
 
-        let cfg_controller = self.cfg_controller.as_mut().unwrap();
-        cfg_controller.register(
-            tikv::config::Module::Storage,
-            Box::new(StorageConfigManger::new(
-                engines.kv.clone(),
-                self.config.storage.block_cache.shared,
-            )),
-        );
-
         self.engines = Some(TiKVEngines {
             engines,
             store_meta,
@@ -497,14 +491,23 @@ impl<ER: RaftEngine> TiKVServer<ER> {
         gc_worker
     }
 
-    fn init_servers(
-        &mut self,
-        gc_worker: &GcWorker<
-            RaftKv<ServerRaftStoreRouter<RocksEngine, ER>>,
-            RaftRouter<RocksEngine, ER>,
-        >,
-    ) -> Arc<ServerConfig> {
+    fn init_servers(&mut self) -> Arc<ServerConfig> {
+        let gc_worker = self.init_gc_worker();
+        let mut ttl_checker = Box::new(TTLChecker::new(
+            self.engines.as_ref().unwrap().engine.kv_engine(),
+            self.region_info_accessor.clone(),
+            self.config.storage.ttl_check_poll_interval.into(),
+        ));
+
         let cfg_controller = self.cfg_controller.as_mut().unwrap();
+        cfg_controller.register(
+            tikv::config::Module::Storage,
+            Box::new(StorageConfigManger::new(
+                self.engines.as_ref().unwrap().engine.kv_engine(),
+                self.config.storage.block_cache.shared,
+                ttl_checker.get_sender(),
+            )),
+        );
 
         // Create cdc.
         let mut cdc_worker = Box::new(LazyWorker::new("cdc"));
@@ -719,6 +722,11 @@ impl<ER: RaftEngine> TiKVServer<ER> {
         }
 
         initial_metric(&self.config.metric);
+
+        if let Err(e) = ttl_checker.start() {
+            fatal!("failed to start ttl checker, error: {}", e);
+        }
+        self.to_stop.push(ttl_checker);
 
         // Start CDC.
         let cdc_endpoint = cdc::Endpoint::new(
@@ -1178,6 +1186,12 @@ impl<T: fmt::Display + Send + 'static> Stop for LazyWorker<T> {
     }
 }
 
+impl<E: KvEngine, R: RegionInfoProvider> Stop for TTLChecker<E, R> {
+    fn stop(mut self: Box<Self>) {
+        (*self).stop()
+    }
+}
+
 const DEFAULT_ENGINE_METRICS_RESET_INTERVAL: Duration = Duration::from_millis(60_000);
 
 pub struct EngineMetricsManager<R: RaftEngine> {
@@ -1194,11 +1208,11 @@ impl<R: RaftEngine> EngineMetricsManager<R> {
     }
 
     pub fn flush(&mut self, now: Instant) {
-        self.engines.kv.flush_metrics("kv");
-        self.engines.raft.flush_metrics("raft");
+        KvEngine::flush_metrics(&self.engines.kv, "kv");
+        RaftEngine::flush_metrics(&self.engines.raft, "raft");
         if now.duration_since(self.last_reset) >= DEFAULT_ENGINE_METRICS_RESET_INTERVAL {
-            self.engines.kv.reset_statistics();
-            self.engines.raft.reset_statistics();
+            KvEngine::reset_statistics(&self.engines.kv);
+            RaftEngine::reset_statistics(&self.engines.raft);
             self.last_reset = now;
         }
     }
