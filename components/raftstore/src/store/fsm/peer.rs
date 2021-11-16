@@ -52,7 +52,7 @@ use crate::store::peer_storage::{ApplySnapResult, InvokeContext};
 use crate::store::transport::Transport;
 use crate::store::util::{is_learner, KeysInfoFormatter};
 use crate::store::worker::{
-    ConsistencyCheckTask, RaftlogGcTask, RaftLogFetchTask, ReadDelegate, RegionTask, SplitCheckTask,
+    ConsistencyCheckTask, RaftLogFetchTask, RaftlogGcTask, ReadDelegate, RegionTask, SplitCheckTask,
 };
 use crate::store::PdTask;
 use crate::store::{
@@ -201,7 +201,15 @@ where
         Ok((
             tx,
             Box::new(PeerFsm {
-                peer: Peer::new(store_id, cfg, region_scheduler, raftlog_fetch_scheduler, engines, region, meta_peer)?,
+                peer: Peer::new(
+                    store_id,
+                    cfg,
+                    region_scheduler,
+                    raftlog_fetch_scheduler,
+                    engines,
+                    region,
+                    meta_peer,
+                )?,
                 tick_registry: PeerTicks::empty(),
                 missing_ticks: 0,
                 hibernate_state: HibernateState::ordered(),
@@ -245,7 +253,15 @@ where
         Ok((
             tx,
             Box::new(PeerFsm {
-                peer: Peer::new(store_id, cfg, region_scheduler, raftlog_fetch_scheduler, engines, &region, peer)?,
+                peer: Peer::new(
+                    store_id,
+                    cfg,
+                    region_scheduler,
+                    raftlog_fetch_scheduler,
+                    engines,
+                    &region,
+                    peer,
+                )?,
                 tick_registry: PeerTicks::empty(),
                 missing_ticks: 0,
                 hibernate_state: HibernateState::ordered(),
@@ -2577,6 +2593,7 @@ where
             let entries = if low > state.get_commit() {
                 vec![]
             } else {
+                // TODO: fetch entries in async way
                 match self
                     .fsm
                     .peer

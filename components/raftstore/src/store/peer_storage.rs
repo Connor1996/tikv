@@ -20,10 +20,10 @@ use raft::{self, Error as RaftError, RaftState, Ready, Storage, StorageError};
 
 use crate::store::fsm::GenSnapTask;
 use crate::store::util;
-use crate::store::ProposalContext;
-use crate::{Error, Result};
 use crate::store::worker::RaftLogFetchTask;
+use crate::store::ProposalContext;
 use crate::store::RaftLogFetchResult;
+use crate::{Error, Result};
 use collections::{HashMap, HashMapEntry};
 use engine_traits::{RaftEngine, RaftLogBatch};
 use into_other::into_other;
@@ -667,7 +667,11 @@ where
         max_size: impl Into<Option<u64>>,
         async_to: Option<u64>,
     ) -> raft::Result<Vec<Entry>> {
-        self.entries(low, high, max_size.into().unwrap_or(u64::MAX), async_to)
+        let max_size = max_size.into();
+        if async_to.is_some() {
+            assert!(max_size.is_some());
+        }
+        self.entries(low, high, max_size.unwrap_or(u64::MAX), async_to)
     }
 
     fn term(&self, idx: u64) -> raft::Result<u64> {
@@ -735,7 +739,7 @@ where
             last_term,
             cache,
             async_fetch_cache: RefCell::new(HashMap::default()),
-            raftlog_fetch_scheduler: raftlog_fetch_scheduler,
+            raftlog_fetch_scheduler,
             raftlog_fetch_stats: AsyncFetchStats::default(),
         })
     }
@@ -951,9 +955,10 @@ where
                             Some(max_size as usize),
                             &mut ents,
                         )?
-                    },
+                    }
                     Some(to) => {
-                        let mut tmp_ents = self.async_fetch(region_id, low, cache_low, max_size, to)?;
+                        let mut tmp_ents =
+                            self.async_fetch(region_id, low, cache_low, max_size, to)?;
                         let count = tmp_ents.len();
                         ents.append(&mut tmp_ents);
                         count
@@ -983,13 +988,7 @@ where
                     )?;
                 }
                 Some(to) => {
-                    let mut tmp_ents = self.async_fetch(
-                        region_id,
-                        low,
-                        high,
-                        max_size,
-                        to, 
-                    )?;
+                    let mut tmp_ents = self.async_fetch(region_id, low, high, max_size, to)?;
                     ents.append(&mut tmp_ents);
                 }
             }
@@ -1009,6 +1008,7 @@ where
         Ok(entries[0].get_term())
     }
 
+    #[inline]
     #[inline]
     pub fn first_index(&self) -> u64 {
         first_index(&self.apply_state)
@@ -1916,8 +1916,15 @@ mod tests {
 
         let region = initial_region(1, 1, 1);
         prepare_bootstrap_cluster(&engines, &region).unwrap();
-        PeerStorage::new(engines, &region,region_scheduler,
-            raftlog_fetch_scheduler, 0, "".to_owned()).unwrap()
+        PeerStorage::new(
+            engines,
+            &region,
+            region_scheduler,
+            raftlog_fetch_scheduler,
+            0,
+            "".to_owned(),
+        )
+        .unwrap()
     }
 
     struct ReadyContext {
@@ -1960,7 +1967,7 @@ mod tests {
         path: &TempDir,
         ents: &[Entry],
     ) -> PeerStorage<KvTestEngine, RaftTestEngine> {
-        let mut store = new_storage(region_scheduler, raftlog_fetch_scheduler,path);
+        let mut store = new_storage(region_scheduler, raftlog_fetch_scheduler, path);
         let mut kv_wb = store.engines.kv.write_batch();
         let mut ctx = InvokeContext::new(&store);
         let mut ready_ctx = ReadyContext::new(&store);
@@ -2030,7 +2037,7 @@ mod tests {
         ];
         for (i, (idx, wterm)) in tests.drain(..).enumerate() {
             let td = Builder::new().prefix("tikv-store-test").tempdir().unwrap();
-            let worker = Worker::new("snap-manager").lazy_build("snap-manager");
+            let worker = Worker::new("snap-manager").lazy_build();
             let sched = worker.scheduler();
             let (dummy_scheduler, _) = dummy_scheduler();
             let store = new_storage_from_ents(sched, dummy_scheduler, &td, &ents);
@@ -2085,7 +2092,7 @@ mod tests {
     #[test]
     fn test_storage_clear_meta() {
         let td = Builder::new().prefix("tikv-store").tempdir().unwrap();
-        let worker = Worker::new("snap-manager").lazy_build("snap-manager");
+        let worker = Worker::new("snap-manager").lazy_build();
         let sched = worker.scheduler();
         let (dummy_scheduler, _) = dummy_scheduler();
         let mut store = new_storage_from_ents(
@@ -2243,7 +2250,7 @@ mod tests {
         ];
         for (i, (idx, werr)) in tests.drain(..).enumerate() {
             let td = Builder::new().prefix("tikv-store-test").tempdir().unwrap();
-            let worker = Worker::new("snap-manager").lazy_build("snap-manager");
+            let worker = Worker::new("snap-manager").lazy_build();
             let sched = worker.scheduler();
             let (dummy_scheduler, _) = dummy_scheduler();
             let mut store = new_storage_from_ents(sched, dummy_scheduler, &td, &ents);

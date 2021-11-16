@@ -31,8 +31,9 @@ pub use self::config::Config;
 pub use self::fsm::{DestroyPeerJob, RaftRouter, StoreInfo};
 pub use self::hibernate_state::{GroupState, HibernateState};
 pub use self::msg::{
-    Callback, CasualMessage, ExtCallback, MergeResultKind, PeerMsg, PeerTicks, RaftCommand, RaftLogFetchResult,
-    ReadCallback, ReadResponse, SignificantMsg, StoreMsg, StoreTick, WriteCallback, WriteResponse,
+    Callback, CasualMessage, ExtCallback, MergeResultKind, PeerMsg, PeerTicks, RaftCommand,
+    RaftLogFetchResult, ReadCallback, ReadResponse, SignificantMsg, StoreMsg, StoreTick,
+    WriteCallback, WriteResponse,
 };
 pub use self::peer::{
     AbstractPeer, Peer, PeerStat, ProposalContext, RequestInspector, RequestPolicy,
@@ -51,7 +52,9 @@ pub use self::snap::{
     ApplyOptions, Error as SnapError, SnapEntry, SnapKey, SnapManager, SnapManagerBuilder,
     Snapshot, SnapshotStatistics,
 };
-pub use self::transport::{CasualRouter, ProposalRouter, SignificantRouter, StoreRouter, Transport};
+pub use self::transport::{
+    CasualRouter, ProposalRouter, SignificantRouter, StoreRouter, Transport,
+};
 pub use self::worker::{
     AutoSplitController, FlowStatistics, FlowStatsReporter, PdTask, ReadDelegate, ReadStats,
     SplitConfig, SplitConfigManager, TrackVer,

@@ -836,7 +836,7 @@ mod tests {
         let snap_dir = Builder::new().prefix("snap_dir").tempdir().unwrap();
         let mgr = SnapManager::new(snap_dir.path().to_str().unwrap());
         let bg_worker = Worker::new("region-worker");
-        let mut worker: LazyWorker<Task<KvTestSnapshot>> = bg_worker.lazy_build("region-worker");
+        let mut worker: LazyWorker<Task<KvTestSnapshot>> = bg_worker.lazy_build();
         let sched = worker.scheduler();
         let (router, _) = mpsc::sync_channel(11);
         let mut runner = RegionRunner::new(
@@ -935,7 +935,7 @@ mod tests {
         let snap_dir = Builder::new().prefix("snap_dir").tempdir().unwrap();
         let mgr = SnapManager::new(snap_dir.path().to_str().unwrap());
         let bg_worker = Worker::new("snap-manager");
-        let mut worker = bg_worker.lazy_build("snapshot-worker");
+        let mut worker = bg_worker.lazy_build();
         let sched = worker.scheduler();
         let (router, receiver) = mpsc::sync_channel(1);
         let runner = RegionRunner::new(

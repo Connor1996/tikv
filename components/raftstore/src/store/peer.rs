@@ -43,7 +43,9 @@ use crate::store::fsm::store::PollContext;
 use crate::store::fsm::{apply, Apply, ApplyMetrics, ApplyTask, CollectedReady, Proposal};
 use crate::store::hibernate_state::GroupState;
 use crate::store::msg::RaftCommand;
-use crate::store::worker::{HeartbeatTask, RaftLogFetchTask, ReadDelegate, ReadExecutor, ReadProgress, RegionTask};
+use crate::store::worker::{
+    HeartbeatTask, RaftLogFetchTask, ReadDelegate, ReadExecutor, ReadProgress, RegionTask,
+};
 use crate::store::{
     Callback, Config, GlobalReplicationState, PdTask, ReadIndexContext, ReadResponse,
 };
@@ -71,7 +73,7 @@ use super::DestroyPeerJob;
 
 const SHRINK_CACHE_CAPACITY: usize = 64;
 const MIN_BCAST_WAKE_UP_INTERVAL: u64 = 1_000; // 1s
-const ON_START_MARK: Vec<u8> = vec![0];
+const ON_START_MARK: &'static [u8] = &[0];
 
 /// The returned states of the peer after checking whether it is stale
 #[derive(Debug, PartialEq, Eq)]
@@ -508,7 +510,7 @@ where
 
     /// The number of the last unpersisted ready.
     last_unpersisted_number: u64,
-    
+
     pub in_store_log_lag: HashSet<u64>,
     pub in_apply_lag: bool,
 }
@@ -533,8 +535,14 @@ where
 
         let tag = format!("[region {}] {}", region.get_id(), peer.get_id());
 
-        let ps = PeerStorage::new(engines, region, region_scheduler,
-            raftlog_fetch_scheduler, peer.get_id(), tag.clone())?;
+        let ps = PeerStorage::new(
+            engines,
+            region,
+            region_scheduler,
+            raftlog_fetch_scheduler,
+            peer.get_id(),
+            tag.clone(),
+        )?;
 
         let applied_index = ps.applied_index();
 
@@ -2158,7 +2166,8 @@ where
 
         let diff = match (
             self.in_apply_lag,
-            self.get_store().commit_index() - apply_state.get_applied_index() > ctx.cfg.leader_transfer_max_log_lag,
+            self.get_store().commit_index() - apply_state.get_applied_index()
+                > ctx.cfg.leader_transfer_max_log_lag,
         ) {
             (true, false) => {
                 self.in_apply_lag = false;
@@ -2609,7 +2618,7 @@ where
             return Some("log gap");
         }
 
-        if msg.get_context() == &ON_START_MARK {
+        if msg.get_context() == ON_START_MARK {
             let meta = ctx.store_meta.lock().unwrap();
             if let Some(count) = meta.store_log_lag.get(&peer.get_store_id()) {
                 if *count != 0 {
@@ -3151,7 +3160,7 @@ where
         msg.set_index(self.get_store().applied_index());
         msg.set_log_term(self.term());
         if time::get_time() <= ctx.start_time + time::Duration::minutes(10) {
-            msg.set_context(ON_START_MARK);
+            msg.set_context(ON_START_MARK.to_vec());
         }
         self.raft_group.raft.msgs.push(msg);
     }

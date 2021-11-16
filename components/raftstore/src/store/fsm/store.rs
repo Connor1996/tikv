@@ -65,7 +65,8 @@ use crate::store::util::is_initial_msg;
 use crate::store::worker::{
     AutoSplitController, CleanupRunner, CleanupSSTRunner, CleanupSSTTask, CleanupTask,
     CompactRunner, CompactTask, ConsistencyCheckRunner, ConsistencyCheckTask, PdRunner,
-    RaftLogFetchRunner, RaftLogFetchTask, RaftlogGcRunner, RaftlogGcTask, ReadDelegate, RegionRunner, RegionTask, SplitCheckTask,
+    RaftLogFetchRunner, RaftLogFetchTask, RaftlogGcRunner, RaftlogGcTask, ReadDelegate,
+    RegionRunner, RegionTask, SplitCheckTask,
 };
 use crate::store::PdTask;
 use crate::store::PeerTicks;
@@ -920,7 +921,7 @@ impl<EK: KvEngine, ER: RaftEngine, T: Transport> PollHandler<PeerFsm<EK, ER>, St
 pub struct RaftPollerBuilder<EK: KvEngine, ER: RaftEngine, T> {
     pub cfg: Arc<VersionTrack<Config>>,
     pub store: metapb::Store,
-start_time: Timespec,
+    start_time: Timespec,
     pd_scheduler: FutureScheduler<PdTask<EK>>,
     consistency_check_scheduler: Scheduler<ConsistencyCheckTask<EK::Snapshot>>,
     split_check_scheduler: Scheduler<SplitCheckTask>,
@@ -1129,8 +1130,8 @@ where
             apply_router: self.apply_router.clone(),
             router: self.router.clone(),
             cleanup_scheduler: self.cleanup_scheduler.clone(),
-            raftlog_gc_scheduler: self.raftlog_gc_scheduler.clone(),
             raftlog_fetch_scheduler: self.raftlog_fetch_scheduler.clone(),
+            raftlog_gc_scheduler: self.raftlog_gc_scheduler.clone(),
             importer: self.importer.clone(),
             store_meta: self.store_meta.clone(),
             pending_create_peers: self.pending_create_peers.clone(),
@@ -1185,6 +1186,8 @@ struct Workers<EK: KvEngine> {
     cleanup_worker: Worker,
     region_worker: Worker,
 
+    raftlog_fetch_worker: Worker,
+
     coprocessor_host: CoprocessorHost<EK>,
 }
 
@@ -1237,6 +1240,7 @@ impl<EK: KvEngine, ER: RaftEngine> RaftBatchSystem<EK, ER> {
             background_worker,
             cleanup_worker: Worker::new("cleanup-worker"),
             region_worker: Worker::new("region-worker"),
+            raftlog_fetch_worker: Worker::new("raftlog-fetch"),
             coprocessor_host: coprocessor_host.clone(),
         };
         mgr.init()?;
@@ -1258,9 +1262,9 @@ impl<EK: KvEngine, ER: RaftEngine> RaftBatchSystem<EK, ER> {
             .background_worker
             .start_with_timer("raft-gc-worker", raftlog_gc_runner);
         let raftlog_fetch_scheduler = workers.raftlog_fetch_worker.start(
-                "raftlog-fetch",
-                RaftLogFetchRunner::new(self.router.clone(), engines.raft.clone()),
-            );
+            "raftlog-fetch",
+            RaftLogFetchRunner::new(self.router.clone(), engines.raft.clone()),
+        );
 
         let compact_runner = CompactRunner::new(engines.kv.clone());
         let cleanup_sst_runner = CleanupSSTRunner::new(

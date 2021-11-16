@@ -13,7 +13,8 @@ use kvproto::raft_serverpb::RaftMessage;
 use raftstore::router::{LocalReadRouter, RaftStoreRouter};
 use raftstore::store::{
     cmd_resp, util, Callback, CasualMessage, CasualRouter, PeerMsg, ProposalRouter, RaftCommand,
-    ReadResponse, RegionSnapshot, SignificantMsg, StoreMsg, StoreRouter, WriteResponse, SignificantMsg, SignificantRouter,
+    ReadResponse, RegionSnapshot, SignificantMsg, SignificantMsg, SignificantRouter, StoreMsg,
+    StoreRouter, WriteResponse,
 };
 use raftstore::Result;
 use tempfile::{Builder, TempDir};

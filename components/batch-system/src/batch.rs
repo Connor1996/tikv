@@ -609,7 +609,12 @@ pub fn create_system<N: Fsm, C: Fsm>(
         sender: tx2.clone(),
     };
     let control_scheduler = ControlScheduler { sender: tx };
-    let router = Router::new(control_box, normal_scheduler,high_pri_normal_scheduler, control_scheduler);
+    let router = Router::new(
+        control_box,
+        normal_scheduler,
+        high_pri_normal_scheduler,
+        control_scheduler,
+    );
     let system = BatchSystem {
         name_prefix: None,
         router: router.clone(),
