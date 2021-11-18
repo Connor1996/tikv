@@ -547,6 +547,12 @@ where
                         }
                     }
                 }
+                PeerMsg::RaftLogFetched { to_peer, ents } => {
+                    if self.fsm.peer.mut_store().on_raft_log_fetched(to_peer, ents) {
+                        self.fsm.peer.raft_group.send_append(to_peer);
+                        self.fsm.has_ready = true;
+                    }
+                }
             }
         }
         // Propose batch request which may be still waiting for more raft-command

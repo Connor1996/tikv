@@ -22,6 +22,8 @@ use crate::store::fsm::GenSnapTask;
 use crate::store::util;
 use crate::store::ProposalContext;
 use crate::{Error, Result};
+use crate::store::worker::RaftLogFetchTask;
+use collections::{HashMap, HashMapEntry};
 use engine_traits::{RaftEngine, RaftLogBatch};
 use into_other::into_other;
 use tikv_util::time::Instant;
@@ -616,6 +618,9 @@ where
     // Entry cache if `ER doesn't have an internal entry cache.
     cache: Option<EntryCache>,
 
+    raftlog_fetch_scheduler: Scheduler<RaftLogFetchTask>,
+    temp_cache: RefCell<HashMap<u64, Option<(raft::Result<Vec<Entry>>, Instant)>>>,
+
     pub tag: String,
 }
 
@@ -744,7 +749,100 @@ where
         Ok(())
     }
 
-    pub fn entries(&self, low: u64, high: u64, max_size: u64) -> raft::Result<Vec<Entry>> {
+    pub fn on_raft_log_fetched(&mut self, to_peer: u64, ents: raft::Result<Vec<Entry>>) -> bool {
+        match self.temp_cache.borrow_mut().entry(to_peer) {
+            HashMapEntry::Occupied(mut entry) => {
+                let o = entry.get_mut();
+                if o.is_none() {
+                    *o = Some((ents, Instant::now_coarse()));
+                    true
+                } else {
+                    // unexpected
+                    // maybe due to merge
+                    panic!()
+                }
+            }
+            HashMapEntry::Vacant(_) => {
+                // do nothing, maybe it's dropped by cache gc
+                false
+            }
+        }
+    }
+
+    fn async_fetch(
+        &self,
+        region_id: u64,
+        low: u64,
+        high: u64,
+        max_size: u64,
+        to: u64,
+    ) -> raft::Result<Vec<Entry>> {
+        // TODO: gc temp_cache
+
+        if let Some(v) = self.temp_cache.borrow().get(&to) {
+            if v.is_none() {
+                // already in fetching
+                return Err(raft::Error::Store(
+                    raft::StorageError::LogTemporarilyUnavailable,
+                ));
+            }
+        }
+
+        if let Some(v) = self.temp_cache.borrow_mut().remove(&to) {
+            let mut ents = v.unwrap().0?;
+            // check validation
+            match ents.first() {
+                None => Ok(ents),
+                Some(e) => {
+                    if e.index == low {
+                        // check low is enough, it's okay to no return the full entries
+                        Ok(ents)
+                    } else if e.index < low {
+                        let idx = (low - e.index) as usize;
+                        Ok(ents.drain(idx..).collect())
+                    } else {
+                        // fallback to fetch the missing log entires in sync way
+                        let mut full_ents = vec![];
+                        self.engines.raft.fetch_entries_to(
+                            region_id,
+                            low,
+                            e.index,
+                            Some(max_size as usize),
+                            &mut full_ents,
+                        )?;
+                        assert_eq!(
+                            full_ents.last().map(|e| e.index).unwrap_or_default(),
+                            e.index - 1
+                        );
+                        full_ents.append(&mut ents);
+                        Ok(full_ents)
+                    }
+                }
+            }
+        } else {
+            self.temp_cache.borrow_mut().insert(to, None);
+            self.raftlog_fetch_scheduler
+                .schedule(RaftLogFetchTask::SendAppend {
+                    region_id,
+                    to_peer: to,
+                    low,
+                    high,
+                    max_size: (max_size as usize),
+                })
+                .unwrap();
+            Err(raft::Error::Store(
+                raft::StorageError::LogTemporarilyUnavailable,
+            ))
+        }
+    }
+
+    pub fn entries(
+        &self,
+        low: u64,
+        high: u64,
+        max_size: u64,
+        async_to: Option<u64>,
+    ) -> raft::Result<Vec<Entry>> {
         self.check_range(low, high)?;
         let mut ents = Vec::with_capacity((high - low) as usize);
         if low == high {
