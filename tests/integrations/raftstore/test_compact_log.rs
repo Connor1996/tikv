@@ -87,7 +87,7 @@ fn check_compacted(
 }
 
 #[test]
-fn test_node_cache_lit() {
+fn test_node_cache_compact_with_one_node_down() {
     let count = 3;
     let mut cluster = new_node_cluster(0, count);
 
