@@ -275,6 +275,11 @@ where
         callback: Callback<SK>,
     },
     LeaderCallback(Callback<SK>),
+    //
+    RaftLogFetched {
+        to_peer: u64,
+        ents: raft::Result<Vec<Entry>>,
+    },
 }
 
 /// Message that will be sent to a peer.

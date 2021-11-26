@@ -769,6 +769,10 @@ where
         }
     }
 
+    pub fn clean_peer_temp_cache(&mut self, peer_id: u64) {
+        self.temp_cache.borrow_mut().remove(&peer_id);
+    }
+
     fn async_fetch(
         &self,
         region_id: u64,
@@ -777,8 +781,7 @@ where
         max_size: u64,
         to: u64,
     ) -> raft::Result<Vec<Entry>> {
-        // TODO: gc temp_cache
-
+        // TODO: check gc temp_cache periodically to avoid leaking memory.
         if let Some(v) = self.temp_cache.borrow().get(&to) {
             if v.is_none() {
                 // already in fetching
@@ -1774,8 +1777,7 @@ pub fn write_peer_state<T: Mutable>(
 mod tests {
     use crate::coprocessor::CoprocessorHost;
     use crate::store::fsm::apply::compact_raft_log;
-    use crate::store::worker::RegionRunner;
-    use crate::store::worker::RegionTask;
+    use crate::store::worker::{RaftLogFetchRunner, RegionRunner, RegionTask};
     use crate::store::{bootstrap_store, initial_region, prepare_bootstrap_cluster};
     use engine_test::kv::{KvTestEngine, KvTestSnapshot, KvTestWriteBatch};
     use engine_test::raft::{RaftTestEngine, RaftTestWriteBatch};
@@ -1793,12 +1795,13 @@ mod tests {
     use std::sync::*;
     use std::time::Duration;
     use tempfile::{Builder, TempDir};
-    use tikv_util::worker::{LazyWorker, Scheduler, Worker};
+    use tikv_util::worker::{dummy_scheduler, LazyWorker, Scheduler, Worker};
 
     use super::*;
 
     fn new_storage(
-        sched: Scheduler<RegionTask<KvTestSnapshot>>,
+        region_scheduler: Scheduler<RegionTask<KvTestSnapshot>>,
+        raftlog_fetch_scheduler: Scheduler<RaftLogFetchTask>,
         path: &TempDir,
     ) -> PeerStorage<KvTestEngine, RaftTestEngine> {
         let kv_db = engine_test::kv::new_engine(path.path().to_str().unwrap(), None, ALL_CFS, None)
@@ -1812,7 +1815,8 @@ mod tests {
 
         let region = initial_region(1, 1, 1);
         prepare_bootstrap_cluster(&engines, &region).unwrap();
-        PeerStorage::new(engines, &region, sched, 0, "".to_owned()).unwrap()
+        PeerStorage::new(engines, &region,region_scheduler,
+            raftlog_fetch_scheduler, 0, "".to_owned()).unwrap()
     }
 
     struct ReadyContext {
@@ -1850,11 +1854,12 @@ mod tests {
     }
 
     fn new_storage_from_ents(
-        sched: Scheduler<RegionTask<KvTestSnapshot>>,
+        region_scheduler: Scheduler<RegionTask<KvTestSnapshot>>,
+        raftlog_fetch_scheduler: Scheduler<RaftLogFetchTask>,
         path: &TempDir,
         ents: &[Entry],
     ) -> PeerStorage<KvTestEngine, RaftTestEngine> {
-        let mut store = new_storage(sched, path);
+        let mut store = new_storage(region_scheduler, raftlog_fetch_scheduler,path);
         let mut kv_wb = store.engines.kv.write_batch();
         let mut ctx = InvokeContext::new(&store);
         let mut ready_ctx = ReadyContext::new(&store);
@@ -1924,7 +1929,8 @@ mod tests {
             let td = Builder::new().prefix("tikv-store-test").tempdir().unwrap();
             let worker = Worker::new("snap-manager").lazy_build("snap-manager");
             let sched = worker.scheduler();
-            let store = new_storage_from_ents(sched, &td, &ents);
+            let (dummy_scheduler, _) = dummy_scheduler();
+            let store = new_storage_from_ents(sched, dummy_scheduler, &td, &ents);
             let t = store.term(idx);
             if wterm != t {
                 panic!("#{}: expect res {:?}, got {:?}", i, wterm, t);
@@ -1978,7 +1984,13 @@ mod tests {
         let td = Builder::new().prefix("tikv-store").tempdir().unwrap();
         let worker = Worker::new("snap-manager").lazy_build("snap-manager");
         let sched = worker.scheduler();
-        let mut store = new_storage_from_ents(sched, &td, &[new_entry(3, 3), new_entry(4, 4)]);
+        let (dummy_scheduler, _) = dummy_scheduler();
+        let mut store = new_storage_from_ents(
+            sched,
+            dummy_scheduler,
+            &td,
+            &[new_entry(3, 3), new_entry(4, 4)],
+        );
         append_ents(&mut store, &[new_entry(5, 5), new_entry(6, 6)]);
 
         assert_eq!(6, get_meta_key_count(&store));
@@ -1990,6 +2002,31 @@ mod tests {
         raft_wb.write().unwrap();
 
         assert_eq!(0, get_meta_key_count(&store));
+    }
+
+    use crate::{Result as RaftStoreResult};
+    use crate::store::{SignificantMsg, SignificantRouter};
+
+    pub struct TestRouter<EK: KvEngine> {
+        ch: SyncSender<SignificantMsg<EK::Snapshot>>,
+    }
+
+    impl<EK:KvEngine> TestRouter<EK> {
+        pub fn new() -> (Self, Receiver<SignificantMsg<EK::Snapshot>>) {
+            let (tx, rx) = sync_channel(1);
+            (Self { ch: tx }, rx)
+        }
+    }
+
+    impl<EK> SignificantRouter<EK> for TestRouter<EK>
+    where
+        EK: KvEngine,
+    {
+        /// Sends a significant message. We should guarantee that the message can't be dropped.
+        fn send(&self, _: u64, msg: SignificantMsg<EK::Snapshot>) -> RaftStoreResult<()> {
+           self.ch.send(msg).unwrap();
+           Ok(())
+        }
     }
 
     #[test]
@@ -2053,11 +2090,27 @@ mod tests {
         ];
 
         for (i, (lo, hi, maxsize, wentries)) in tests.drain(..).enumerate() {
+            let (router, rx) = TestRouter::new();
             let td = Builder::new().prefix("tikv-store-test").tempdir().unwrap();
-            let worker = Worker::new("snap-manager").lazy_build("snap-manager");
-            let sched = worker.scheduler();
-            let store = new_storage_from_ents(sched, &td, &ents);
-            let e = store.entries(lo, hi, maxsize);
+            let region_worker = Worker::new("snap-manager").lazy_build("snap-manager");
+            let region_scheduler = region_worker.scheduler();
+            let mut raftlog_fetch_worker = Worker::new("raftlog-fetch").lazy_build("raftlog-fetch");
+            let raftlog_fetch_scheduler = raftlog_fetch_worker.scheduler();
+            let store =
+                new_storage_from_ents(region_scheduler, raftlog_fetch_scheduler, &td, &ents);
+            raftlog_fetch_worker.start(RaftLogFetchRunner::<KvTestEngine, RaftTestEngine, _>::new(
+                router,
+                store.engines.raft.clone(),
+            ));
+            let e = store.entries(lo, hi, maxsize, Some(0));
+            assert_eq!(
+                e,
+                Err(raft::Error::Store(
+                    raft::StorageError::LogTemporarilyUnavailable
+                ))
+            );
+            rx.recv().unwrap();
+            let e = store.entries(lo, hi, maxsize, Some(0));
             if e != wentries {
                 panic!("#{}: expect entries {:?}, got {:?}", i, wentries, e);
             }
@@ -2080,7 +2133,8 @@ mod tests {
             let td = Builder::new().prefix("tikv-store-test").tempdir().unwrap();
             let worker = Worker::new("snap-manager").lazy_build("snap-manager");
             let sched = worker.scheduler();
-            let store = new_storage_from_ents(sched, &td, &ents);
+            let (dummy_scheduler, _) = dummy_scheduler();
+            let mut store = new_storage_from_ents(sched, dummy_scheduler, &td, &ents);
             let mut ctx = InvokeContext::new(&store);
             let res = store
                 .term(idx)
@@ -2131,9 +2185,10 @@ mod tests {
         let td = Builder::new().prefix("tikv-store-test").tempdir().unwrap();
         let snap_dir = Builder::new().prefix("snap_dir").tempdir().unwrap();
         let mgr = SnapManager::new(snap_dir.path().to_str().unwrap());
-        let mut worker = Worker::new("region-worker").lazy_build("la");
+        let mut worker = Worker::new("region-worker").lazy_build("region-worker");
         let sched = worker.scheduler();
-        let mut s = new_storage_from_ents(sched.clone(), &td, &ents);
+        let (dummy_scheduler, _) = dummy_scheduler();
+        let mut s = new_storage_from_ents(sched.clone(), dummy_scheduler, &td, &ents);
         let (router, _) = mpsc::sync_channel(100);
         let runner = RegionRunner::new(
             s.engines.kv.clone(),
@@ -2295,10 +2350,11 @@ mod tests {
             let td = Builder::new().prefix("tikv-store-test").tempdir().unwrap();
             let worker = LazyWorker::new("snap-manager");
             let sched = worker.scheduler();
-            let mut store = new_storage_from_ents(sched, &td, &ents);
+            let (dummy_scheduler, _) = dummy_scheduler();
+            let mut store = new_storage_from_ents(sched, dummy_scheduler, &td, &ents);
             append_ents(&mut store, &entries);
             let li = store.last_index();
-            let actual_entries = store.entries(4, li + 1, u64::max_value()).unwrap();
+            let actual_entries = store.entries(4, li + 1, u64::max_value(), None).unwrap();
             if actual_entries != wentries {
                 panic!("#{}: want {:?}, got {:?}", i, wentries, actual_entries);
             }
@@ -2311,10 +2367,11 @@ mod tests {
         let td = Builder::new().prefix("tikv-store-test").tempdir().unwrap();
         let worker = LazyWorker::new("snap-manager");
         let sched = worker.scheduler();
-        let mut store = new_storage_from_ents(sched, &td, &ents);
+        let (dummy_scheduler, _) = dummy_scheduler();
+        let mut store = new_storage_from_ents(sched, dummy_scheduler, &td, &ents);
         store.cache.as_mut().unwrap().cache.clear();
         // empty cache should fetch data from rocksdb directly.
-        let mut res = store.entries(4, 6, u64::max_value()).unwrap();
+        let mut res = store.entries(4, 6, u64::max_value(), None).unwrap();
         assert_eq!(*res, ents[1..]);
 
         let entries = vec![new_entry(6, 5), new_entry(7, 5)];
@@ -2322,27 +2379,27 @@ mod tests {
         validate_cache(&store, &entries);
 
         // direct cache access
-        res = store.entries(6, 8, u64::max_value()).unwrap();
+        res = store.entries(6, 8, u64::max_value(), None).unwrap();
         assert_eq!(res, entries);
 
         // size limit should be supported correctly.
-        res = store.entries(4, 8, 0).unwrap();
+        res = store.entries(4, 8, 0, None).unwrap();
         assert_eq!(res, vec![new_entry(4, 4)]);
         let mut size = ents[1..].iter().map(|e| u64::from(e.compute_size())).sum();
-        res = store.entries(4, 8, size).unwrap();
+        res = store.entries(4, 8, size, None).unwrap();
         let mut exp_res = ents[1..].to_vec();
         assert_eq!(res, exp_res);
         for e in &entries {
             size += u64::from(e.compute_size());
             exp_res.push(e.clone());
-            res = store.entries(4, 8, size).unwrap();
+            res = store.entries(4, 8, size, None).unwrap();
             assert_eq!(res, exp_res);
         }
 
         // range limit should be supported correctly.
         for low in 4..9 {
             for high in low..9 {
-                let res = store.entries(low, high, u64::max_value()).unwrap();
+                let res = store.entries(low, high, u64::max_value(), None).unwrap();
                 assert_eq!(*res, exp_res[low as usize - 4..high as usize - 4]);
             }
         }
@@ -2354,7 +2411,8 @@ mod tests {
         let td = Builder::new().prefix("tikv-store-test").tempdir().unwrap();
         let worker = LazyWorker::new("snap-manager");
         let sched = worker.scheduler();
-        let mut store = new_storage_from_ents(sched, &td, &ents);
+        let (dummy_scheduler, _) = dummy_scheduler();
+        let mut store = new_storage_from_ents(sched, dummy_scheduler, &td, &ents);
         store.cache.as_mut().unwrap().cache.clear();
 
         // initial cache
@@ -2450,7 +2508,8 @@ mod tests {
         let mgr = SnapManager::new(snap_dir.path().to_str().unwrap());
         let mut worker = LazyWorker::new("snap-manager");
         let sched = worker.scheduler();
-        let s1 = new_storage_from_ents(sched.clone(), &td1, &ents);
+        let (dummy_scheduler, _) = dummy_scheduler();
+        let s1 = new_storage_from_ents(sched.clone(), dummy_scheduler.clone(), &td1, &ents);
         let (router, _) = mpsc::sync_channel(100);
         let runner = RegionRunner::new(
             s1.engines.kv.clone(),
@@ -2475,7 +2534,7 @@ mod tests {
         worker.stop();
 
         let td2 = Builder::new().prefix("tikv-store-test").tempdir().unwrap();
-        let mut s2 = new_storage(sched.clone(), &td2);
+        let mut s2 = new_storage(sched.clone(), dummy_scheduler.clone(), &td2);
         assert_eq!(s2.first_index(), s2.applied_index() + 1);
         let mut ctx = InvokeContext::new(&s2);
         assert_ne!(ctx.last_term, snap1.get_metadata().get_term());
@@ -2493,7 +2552,7 @@ mod tests {
 
         let td3 = Builder::new().prefix("tikv-store-test").tempdir().unwrap();
         let ents = &[new_entry(3, 3), new_entry(4, 3)];
-        let mut s3 = new_storage_from_ents(sched, &td3, ents);
+        let mut s3 = new_storage_from_ents(sched, dummy_scheduler.clone(), &td3, ents);
         validate_cache(&s3, &ents[1..]);
         let mut ctx = InvokeContext::new(&s3);
         assert_ne!(ctx.last_term, snap1.get_metadata().get_term());
@@ -2514,7 +2573,8 @@ mod tests {
         let td = Builder::new().prefix("tikv-store-test").tempdir().unwrap();
         let worker = LazyWorker::new("snap-manager");
         let sched = worker.scheduler();
-        let mut s = new_storage(sched, &td);
+        let (dummy_scheduler, _) = dummy_scheduler();
+        let mut s = new_storage(sched, dummy_scheduler, &td);
 
         // PENDING can be canceled directly.
         s.snap_state = RefCell::new(SnapState::Applying(Arc::new(AtomicUsize::new(
@@ -2560,7 +2620,8 @@ mod tests {
         let td = Builder::new().prefix("tikv-store-test").tempdir().unwrap();
         let worker = LazyWorker::new("snap-manager");
         let sched = worker.scheduler();
-        let mut s = new_storage(sched, &td);
+        let (dummy_scheduler, _) = dummy_scheduler();
+        let mut s = new_storage(sched, dummy_scheduler, &td);
 
         // PENDING can be finished.
         let mut snap_state = SnapState::Applying(Arc::new(AtomicUsize::new(JOB_STATUS_PENDING)));
@@ -2632,8 +2693,10 @@ mod tests {
     #[test]
     fn test_validate_states() {
         let td = Builder::new().prefix("tikv-store-test").tempdir().unwrap();
-        let worker = LazyWorker::new("snap-manager");
-        let sched = worker.scheduler();
+        let region_worker = LazyWorker::new("snap-manager");
+        let region_sched = region_worker.scheduler();
+        let raftlog_fetch_worker = LazyWorker::new("raftlog-fetch");
+        let raftlog_fetch_sched = raftlog_fetch_worker.scheduler();
         let kv_db =
             engine_test::kv::new_engine(td.path().to_str().unwrap(), None, ALL_CFS, None).unwrap();
         let raft_path = td.path().join(Path::new("raft"));
@@ -2646,7 +2709,14 @@ mod tests {
         let region = initial_region(1, 1, 1);
         prepare_bootstrap_cluster(&engines, &region).unwrap();
         let build_storage = || -> Result<PeerStorage<KvTestEngine, RaftTestEngine>> {
-            PeerStorage::new(engines.clone(), &region, sched.clone(), 0, "".to_owned())
+            PeerStorage::new(
+                engines.clone(),
+                &region,
+                region_sched.clone(),
+                raftlog_fetch_sched.clone(),
+                0,
+                "".to_owned(),
+            )
         };
         let mut s = build_storage().unwrap();
         let mut raft_state = RaftLocalState::default();

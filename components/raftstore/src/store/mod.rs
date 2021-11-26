@@ -51,7 +51,7 @@ pub use self::snap::{
     ApplyOptions, Error as SnapError, SnapEntry, SnapKey, SnapManager, SnapManagerBuilder,
     Snapshot, SnapshotStatistics,
 };
-pub use self::transport::{CasualRouter, ProposalRouter, StoreRouter, Transport};
+pub use self::transport::{CasualRouter, ProposalRouter, SignificantRouter, StoreRouter, Transport};
 pub use self::worker::{
     AutoSplitController, FlowStatistics, FlowStatsReporter, PdTask, ReadDelegate, ReadStats,
     SplitConfig, SplitConfigManager, TrackVer,

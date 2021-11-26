@@ -3270,6 +3270,8 @@ where
 
     pub fn remove_peer_from_cache(&mut self, peer_id: u64) {
         self.peer_cache.borrow_mut().remove(&peer_id);
+        // clean temp cache too
+        self.mut_store().clean_peer_temp_cache(peer_id);
     }
 
     pub fn get_peer_from_cache(&self, peer_id: u64) -> Option<metapb::Peer> {

@@ -340,18 +340,16 @@ pub mod test_router {
         }
     }
 
+    impl<EK: KvEngine> SignificantRouter<EK> for TestRaftStoreRouter {
+        fn send(&self, _: u64, _: SignificantMsg<EK::Snapshot>) -> RaftStoreResult<()> {
+            let _ = self.significant_msg_sender.send(msg);
+            Ok(())
+        }
+    }
+
     impl RaftStoreRouter<RocksEngine> for TestRaftStoreRouter {
         fn send_raft_msg(&self, _: RaftMessage) -> RaftStoreResult<()> {
             let _ = self.tx.send(1);
-            Ok(())
-        }
-
-        fn significant_send(
-            &self,
-            _: u64,
-            msg: SignificantMsg<RocksSnapshot>,
-        ) -> RaftStoreResult<()> {
-            let _ = self.significant_msg_sender.send(msg);
             Ok(())
         }
 
