@@ -93,7 +93,6 @@ where
                     Some(max_size),
                     &mut ents,
                 );
-
                 self.router
                     .send(
                         region_id,

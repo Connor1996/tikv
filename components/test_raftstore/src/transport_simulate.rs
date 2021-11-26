@@ -16,7 +16,7 @@ use raft::eraftpb::MessageType;
 use raftstore::router::{LocalReadRouter, RaftStoreRouter};
 use raftstore::store::{
     Callback, CasualMessage, CasualRouter, PeerMsg, ProposalRouter, RaftCommand, SignificantMsg,
-    StoreMsg, StoreRouter, Transport,
+    SignificantRouter, StoreMsg, StoreRouter, Transport,
 };
 use raftstore::Result as RaftStoreResult;
 use raftstore::{DiscardReason, Error, Result};
@@ -231,7 +231,7 @@ impl<C: RaftStoreRouter<RocksEngine>> CasualRouter<RocksEngine> for SimulateTran
 }
 
 impl<C: RaftStoreRouter<RocksEngine>> SignificantRouter<RocksEngine> for SimulateTransport<C> {
-    fn send(&self, region_id: u64, msg: SignificantMsg<RocksEngine::Snapshot>) -> Result<()> {
+    fn send(&self, region_id: u64, msg: SignificantMsg<RocksSnapshot>) -> Result<()> {
         SignificantRouter::<RocksEngine>::send(&self.ch, region_id, msg)
     }
 }
