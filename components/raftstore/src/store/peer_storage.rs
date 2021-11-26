@@ -619,7 +619,7 @@ where
     cache: Option<EntryCache>,
 
     raftlog_fetch_scheduler: Scheduler<RaftLogFetchTask>,
-    temp_cache: RefCell<HashMap<u64, Option<(raft::Result<Vec<Entry>>, Instant)>>>,
+    temp_cache: RefCell<HashMap<u64, Option<raft::Result<Vec<Entry>>>>>,
 
     pub tag: String,
 }
@@ -754,7 +754,7 @@ where
             HashMapEntry::Occupied(mut entry) => {
                 let o = entry.get_mut();
                 if o.is_none() {
-                    *o = Some((ents, Instant::now_coarse()));
+                    *o = Some(ents);
                     true
                 } else {
                     // unexpected
@@ -792,13 +792,13 @@ where
         }
 
         if let Some(v) = self.temp_cache.borrow_mut().remove(&to) {
-            let mut ents = v.unwrap().0?;
+            let mut ents = v.unwrap()?;
             // check validation
-            match ents.first() {
+            return match ents.first() {
                 None => Ok(ents),
                 Some(e) => {
                     if e.index == low {
-                        // check low is enough, it's okay to no return the full entries
+                        // check low is enough, it's okay to not return the full entries
                         Ok(ents)
                     } else if e.index < low {
                         let idx = (low - e.index) as usize;
@@ -821,22 +821,22 @@ where
                         Ok(full_ents)
                     }
                 }
-            }
-        } else {
-            self.temp_cache.borrow_mut().insert(to, None);
-            self.raftlog_fetch_scheduler
-                .schedule(RaftLogFetchTask::SendAppend {
-                    region_id,
-                    to_peer: to,
-                    low,
-                    high,
-                    max_size: (max_size as usize),
-                })
-                .unwrap();
-            Err(raft::Error::Store(
-                raft::StorageError::LogTemporarilyUnavailable,
-            ))
+            };
         }
+
+        self.temp_cache.borrow_mut().insert(to, None);
+        self.raftlog_fetch_scheduler
+            .schedule(RaftLogFetchTask::SendAppend {
+                region_id,
+                to_peer: to,
+                low,
+                high,
+                max_size: (max_size as usize),
+            })
+            .unwrap();
+        Err(raft::Error::Store(
+            raft::StorageError::LogTemporarilyUnavailable,
+        ))
     }
 
     pub fn entries(
@@ -1863,6 +1863,8 @@ mod tests {
         let mut kv_wb = store.engines.kv.write_batch();
         let mut ctx = InvokeContext::new(&store);
         let mut ready_ctx = ReadyContext::new(&store);
+        store.append(ents[1..].to_vec(), &mut write_task);
+        store.update_cache_persisted(ents.last().unwrap().get_index());
         store
             .append(&mut ctx, ents[1..].to_vec(), &mut ready_ctx)
             .unwrap();
@@ -2004,14 +2006,14 @@ mod tests {
         assert_eq!(0, get_meta_key_count(&store));
     }
 
-    use crate::{Result as RaftStoreResult};
     use crate::store::{SignificantMsg, SignificantRouter};
+    use crate::Result as RaftStoreResult;
 
     pub struct TestRouter<EK: KvEngine> {
         ch: SyncSender<SignificantMsg<EK::Snapshot>>,
     }
 
-    impl<EK:KvEngine> TestRouter<EK> {
+    impl<EK: KvEngine> TestRouter<EK> {
         pub fn new() -> (Self, Receiver<SignificantMsg<EK::Snapshot>>) {
             let (tx, rx) = sync_channel(1);
             (Self { ch: tx }, rx)
@@ -2024,8 +2026,8 @@ mod tests {
     {
         /// Sends a significant message. We should guarantee that the message can't be dropped.
         fn send(&self, _: u64, msg: SignificantMsg<EK::Snapshot>) -> RaftStoreResult<()> {
-           self.ch.send(msg).unwrap();
-           Ok(())
+            self.ch.send(msg).unwrap();
+            Ok(())
         }
     }
 
@@ -2089,6 +2091,7 @@ mod tests {
             ),
         ];
 
+        let mut count = 0;
         for (i, (lo, hi, maxsize, wentries)) in tests.drain(..).enumerate() {
             let (router, rx) = TestRouter::new();
             let td = Builder::new().prefix("tikv-store-test").tempdir().unwrap();
@@ -2096,25 +2099,33 @@ mod tests {
             let region_scheduler = region_worker.scheduler();
             let mut raftlog_fetch_worker = Worker::new("raftlog-fetch").lazy_build("raftlog-fetch");
             let raftlog_fetch_scheduler = raftlog_fetch_worker.scheduler();
-            let store =
+            let mut store =
                 new_storage_from_ents(region_scheduler, raftlog_fetch_scheduler, &td, &ents);
             raftlog_fetch_worker.start(RaftLogFetchRunner::<KvTestEngine, RaftTestEngine, _>::new(
                 router,
                 store.engines.raft.clone(),
             ));
-            let e = store.entries(lo, hi, maxsize, Some(0));
-            assert_eq!(
-                e,
-                Err(raft::Error::Store(
-                    raft::StorageError::LogTemporarilyUnavailable
-                ))
-            );
-            rx.recv().unwrap();
-            let e = store.entries(lo, hi, maxsize, Some(0));
+            store.compact_cache_to(5);
+            let mut e = store.entries(lo, hi, maxsize, Some(0));
+            if e == Err(raft::Error::Store(
+                raft::StorageError::LogTemporarilyUnavailable,
+            )) {
+                let res = rx.recv().unwrap();
+                match res {
+                    SignificantMsg::RaftLogFetched { to_peer, ents } => {
+                        assert_eq!(store.on_raft_log_fetched(to_peer, ents), true);
+                    }
+                    _ => unreachable!(),
+                };
+                count += 1;
+                e = store.entries(lo, hi, maxsize, Some(0));
+            }
             if e != wentries {
                 panic!("#{}: expect entries {:?}, got {:?}", i, wentries, e);
             }
         }
+
+        assert_ne!(count, 0);
     }
 
     // last_index and first_index are not mutated by PeerStorage on its own,
