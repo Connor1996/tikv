@@ -797,10 +797,11 @@ where
             return match ents.first() {
                 None => Ok(ents),
                 Some(e) => {
+                    let last = ents.last().map(|e| e.index).unwrap();
                     if e.index == low {
                         // check low is enough, it's okay to not return the full entries
                         Ok(ents)
-                    } else if e.index < low {
+                    } else if e.index < low && low <= last {
                         let idx = (low - e.index) as usize;
                         Ok(ents.drain(idx..).collect())
                     } else {
