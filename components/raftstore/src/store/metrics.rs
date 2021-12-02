@@ -108,7 +108,10 @@ make_auto_flush_static_metric! {
 
     pub label_enum RaftEntryType {
         hit,
-        miss
+        miss,
+        async_fetch,
+        sync_fetch,
+        fallback_fetch,
     }
 
     pub label_enum RaftInvalidProposal {

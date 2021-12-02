@@ -70,6 +70,7 @@ macro_rules! impl_sched {
     };
 }
 
+impl_sched!(HighPriNormalScheduler, FsmTypes::Normal, Fsm = N);
 impl_sched!(NormalScheduler, FsmTypes::Normal, Fsm = N);
 impl_sched!(ControlScheduler, FsmTypes::Control, Fsm = C);
 
@@ -337,6 +338,7 @@ pub trait PollHandler<N, C> {
 struct Poller<N: Fsm, C: Fsm, Handler> {
     router: Router<N, C, NormalScheduler<N, C>, ControlScheduler<N, C>>,
     fsm_receiver: channel::Receiver<FsmTypes<N, C>>,
+    pub high_pri_fsm_receiver: channel::Receiver<FsmTypes<N, C>>,
     handler: Handler,
     max_batch_size: usize,
     reschedule_duration: Duration,
@@ -354,14 +356,27 @@ impl<N: Fsm, C: Fsm, Handler: PollHandler<N, C>> Poller<N, C, Handler> {
             return true;
         }
 
+        if let Ok(fsm) = self.high_pri_fsm_receiver.try_recv() {
+            return batch.push(fsm);
+        }
+
         if let Ok(fsm) = self.fsm_receiver.try_recv() {
             return batch.push(fsm);
         }
 
         if batch.is_empty() {
             self.handler.pause();
-            if let Ok(fsm) = self.fsm_receiver.recv() {
-                return batch.push(fsm);
+            channel::select! {
+                recv(self.high_pri_fsm_receiver) -> msg => {
+                    if let Ok(fsm) = msg {
+                        return batch.push(fsm);
+                    }
+                }
+                recv(self.fsm_receiver) -> msg => {
+                    if let Ok(fsm) = msg {
+                        return batch.push(fsm);
+                    }
+                }
             }
         }
         !batch.is_empty()
@@ -424,6 +439,31 @@ impl<N: Fsm, C: Fsm, Handler: PollHandler<N, C>> Poller<N, C, Handler> {
             }
             let mut fsm_cnt = batch.normals.len();
             while batch.normals.len() < max_batch_size {
+                if let Ok(fsm) = self.high_pri_fsm_receiver.try_recv() {
+                    run = batch.push(fsm);
+                }
+                // If we receive a ControlFsm, break this cycle and call `end`. Because ControlFsm
+                // may change state of the handler, we shall deal with it immediately after
+                // calling `begin` of `Handler`.
+                if !run || fsm_cnt >= batch.normals.len() {
+                    break;
+                }
+                let p = batch.normals[fsm_cnt].as_mut().unwrap();
+                let res = self.handler.handle_normal(p);
+                if p.is_stopped() {
+                    p.policy = Some(ReschedulePolicy::Remove);
+                    reschedule_fsms.push(fsm_cnt);
+                } else if let HandleResult::StopAt { progress, skip_end } = res {
+                    p.policy = Some(ReschedulePolicy::Release(progress));
+                    reschedule_fsms.push(fsm_cnt);
+                    if skip_end {
+                        to_skip_end.push(fsm_cnt);
+                    }
+                }
+                fsm_cnt += 1;
+            }
+
+            while batch.normals.len() < max_batch_size {
                 if let Ok(fsm) = self.fsm_receiver.try_recv() {
                     run = batch.push(fsm);
                 }
@@ -480,6 +520,7 @@ pub trait HandlerBuilder<N, C> {
 pub struct BatchSystem<N: Fsm, C: Fsm> {
     name_prefix: Option<String>,
     router: BatchRouter<N, C>,
+    high_pri_receiver: channel::Receiver<FsmTypes<N, C>>,
     receiver: channel::Receiver<FsmTypes<N, C>>,
     pool_size: usize,
     max_batch_size: usize,
@@ -561,13 +602,18 @@ pub fn create_system<N: Fsm, C: Fsm>(
 ) -> (BatchRouter<N, C>, BatchSystem<N, C>) {
     let control_box = BasicMailbox::new(sender, controller);
     let (tx, rx) = channel::unbounded();
+    let (tx2, rx2) = channel::unbounded();
     let normal_scheduler = NormalScheduler { sender: tx.clone() };
+    let high_pri_normal_scheduler = NormalScheduler {
+        sender: tx2.clone(),
+    };
     let control_scheduler = ControlScheduler { sender: tx };
     let router = Router::new(control_box, normal_scheduler, control_scheduler);
     let system = BatchSystem {
         name_prefix: None,
         router: router.clone(),
         receiver: rx,
+        high_pri_receiver: rx2,
         pool_size: cfg.pool_size,
         max_batch_size: cfg.max_batch_size(),
         reschedule_duration: cfg.reschedule_duration.0,

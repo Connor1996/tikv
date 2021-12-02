@@ -617,6 +617,9 @@ where
 
     // Entry cache if `ER doesn't have an internal entry cache.
     cache: Option<EntryCache>,
+    async_fetch: Cell<u64>,
+    sync_fetch: Cell<u64>,
+    fallback_fetch: Cell<u64>,
 
     raftlog_fetch_scheduler: Scheduler<RaftLogFetchTask>,
     temp_cache: RefCell<HashMap<u64, Option<raft::Result<Vec<Entry>>>>>,
@@ -705,6 +708,10 @@ where
             applied_index_term,
             last_term,
             cache,
+            async_fetch: Cell::new(0),
+            sync_fetch: Cell::new(0),
+            fallback_fetch: Cell::new(0),
+            temp_cache: RefCell::new(HashMap::default()),
         })
     }
 
@@ -805,6 +812,7 @@ where
                         let idx = (low - e.index) as usize;
                         Ok(ents.drain(idx..).collect())
                     } else {
+                        self.fallback_fetch.update(|m| m + 1);
                         // fallback to fetch the missing log entires in sync way
                         let mut full_ents = vec![];
                         self.engines.raft.fetch_entries_to(
@@ -825,6 +833,7 @@ where
             };
         }
 
+        self.async_fetch.update(|m| m + 1);
         self.temp_cache.borrow_mut().insert(to, None);
         self.raftlog_fetch_scheduler
             .schedule(RaftLogFetchTask::SendAppend {
@@ -857,24 +866,43 @@ where
             let cache_low = cache.first_index().unwrap_or(u64::MAX);
             if high <= cache_low {
                 cache.miss.update(|m| m + 1);
-                self.engines.raft.fetch_entries_to(
-                    region_id,
-                    low,
-                    high,
-                    Some(max_size as usize),
-                    &mut ents,
-                )?;
-                return Ok(ents);
+                match async_to {
+                    None => {
+                        self.sync_fetch.update(|m| m + 1);
+                        self.engines.raft.fetch_entries_to(
+                            region_id,
+                            low,
+                            high,
+                            Some(max_size as usize),
+                            &mut ents,
+                        )?;
+                        return Ok(ents);
+                    }
+                    Some(to) => {
+                        return self.async_fetch(region_id, low, high, max_size, to);
+                    }
+                }
             }
             let begin_idx = if low < cache_low {
                 cache.miss.update(|m| m + 1);
-                let fetched_count = self.engines.raft.fetch_entries_to(
-                    region_id,
-                    low,
-                    cache_low,
-                    Some(max_size as usize),
-                    &mut ents,
-                )?;
+                let fetched_count = match async_to {
+                    None => {
+                        self.sync_fetch.update(|m| m + 1);
+                        self.engines.raft.fetch_entries_to(
+                            region_id,
+                            low,
+                            cache_low,
+                            Some(max_size as usize),
+                            &mut ents,
+                        )?
+                    },
+                    Some(to) => {
+                        let mut tmp_ents = self.async_fetch(region_id, low, cache_low, max_size, to)?;
+                        let count = tmp_ents.len();
+                        ents.append(&mut tmp_ents);
+                        count
+                    }
+                };
                 if fetched_count < (cache_low - low) as usize {
                     // Less entries are fetched than expected.
                     return Ok(ents);
@@ -887,13 +915,14 @@ where
             let fetched_size = ents.iter().fold(0, |acc, e| acc + e.compute_size());
             cache.fetch_entries_to(begin_idx, high, fetched_size as u64, max_size, &mut ents);
         } else {
-            self.engines.raft.fetch_entries_to(
+            let mut tmp_ents = self.async_fetch(
                 region_id,
                 low,
                 high,
                 Some(max_size as usize),
-                &mut ents,
+                to, 
             )?;
+            ents.append(&mut tmp_ents);
         }
         Ok(ents)
     }
@@ -1213,6 +1242,12 @@ where
             cache.flush_stats();
             return;
         }
+        let async_fetch = self.async_fetch.replace(0);
+        RAFT_ENTRY_FETCHES.async_fetch.inc_by(async_fetch);
+        let sync_fetch = self.sync_fetch.replace(0);
+        RAFT_ENTRY_FETCHES.sync_fetch.inc_by(sync_fetch);
+        let fallback_fetch = self.fallback_fetch.replace(0);
+        RAFT_ENTRY_FETCHES.sync_fetch.inc_by(fallback_fetch);
         if let Some(stats) = self.engines.raft.flush_stats() {
             RAFT_ENTRIES_CACHES_GAUGE.set(stats.cache_size as i64);
             RAFT_ENTRY_FETCHES.hit.inc_by(stats.hit as i64);

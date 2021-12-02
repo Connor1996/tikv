@@ -200,11 +200,12 @@ where
                 PeerMsg::ApplyRes {
                     res: ApplyTaskRes::Apply(r),
                 },
+                false,
             );
         }
     }
     fn notify_one(&self, region_id: u64, msg: PeerMsg<EK>) {
-        self.router.try_send(region_id, msg);
+        self.router.try_send(region_id, msg, false);
     }
 
     fn clone_box(&self) -> Box<dyn ApplyNotifier<EK>> {
@@ -222,7 +223,7 @@ where
         mut msg: RaftMessage,
     ) -> std::result::Result<(), TrySendError<RaftMessage>> {
         let id = msg.get_region_id();
-        match self.try_send(id, PeerMsg::RaftMessage(msg)) {
+        match self.try_send(id, PeerMsg::RaftMessage(msg), false) {
             Either::Left(Ok(())) => return Ok(()),
             Either::Left(Err(TrySendError::Full(PeerMsg::RaftMessage(m)))) => {
                 return Err(TrySendError::Full(m));
