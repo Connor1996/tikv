@@ -20,6 +20,7 @@ use crate::store::metrics::RaftEventDurationType;
 use crate::store::util::KeysInfoFormatter;
 use crate::store::SnapKey;
 use tikv_util::{escape, time::Instant};
+use time::Timespec;
 
 use super::{AbstractPeer, RegionSnapshot};
 
@@ -500,6 +501,7 @@ where
     Tick(StoreTick),
     Start {
         store: metapb::Store,
+        start_time: Timespec,
     },
     CheckLeader {
         leaders: Vec<LeaderInfo>,
@@ -534,7 +536,7 @@ where
                 start_key, end_key
             ),
             StoreMsg::Tick(tick) => write!(fmt, "StoreTick {:?}", tick),
-            StoreMsg::Start { ref store } => write!(fmt, "Start store {:?}", store),
+            StoreMsg::Start { ref store, .. } => write!(fmt, "Start store {:?}", store),
             StoreMsg::CheckLeader { ref leaders, .. } => write!(fmt, "CheckLeader {:?}", leaders),
             #[cfg(any(test, feature = "testexport"))]
             StoreMsg::Validate(_) => write!(fmt, "Validate config"),

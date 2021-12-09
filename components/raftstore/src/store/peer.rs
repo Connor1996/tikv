@@ -507,6 +507,8 @@ where
 
     /// The number of the last unpersisted ready.
     last_unpersisted_number: u64,
+    
+    pub in_store_log_lag: HashSet<u64>,
 }
 
 impl<EK, ER> Peer<EK, ER>
@@ -600,6 +602,7 @@ where
             max_ts_sync_status: Arc::new(AtomicU64::new(0)),
             cmd_epoch_checker: Default::default(),
             last_unpersisted_number: 0,
+            in_store_log_lag: HashSet::default(),
         };
 
         // If this region has only one peer and I am the one, campaign directly.
@@ -2550,6 +2553,14 @@ where
         if last_index >= index + ctx.cfg.leader_transfer_max_log_lag {
             return Some("log gap");
         }
+
+        let meta = ctx.store_meta.lock().unwrap();
+        if let Some(count) = meta.store_log_lag.get(&peer.get_store_id()) {
+            if *count != 0 {
+                return Some("other peer log gap");
+            }
+        }
+
         None
     }
 
@@ -3063,6 +3074,16 @@ where
             );
             return;
         }
+
+        // if time::get_time() <= ctx.start_time + time::Duration::minutes(1) {
+        //     info!(
+        //         "reject tranferring leader due to just after starting";
+        //         "region_id" => self.region_id,
+        //         "peer_id" => self.peer.get_id(),
+        //         "from" => msg.get_from(),
+        //     );
+        //     return;
+        // }
 
         let mut msg = eraftpb::Message::new();
         msg.set_from(self.peer_id());
