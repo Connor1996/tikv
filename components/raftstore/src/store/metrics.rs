@@ -25,6 +25,13 @@ make_auto_flush_static_metric! {
         batch,
     }
 
+    pub label_enum WriteCmdType {
+        put,
+        delete,
+        delete_range,
+        ingest_sst,
+    }
+
     pub label_enum AdminCmdType {
         conf_change,
         add_peer,
@@ -175,6 +182,10 @@ make_auto_flush_static_metric! {
         "status" => AdminCmdStatus,
     }
 
+    pub struct WriteCmdVec : LocalIntCounter {
+        "type" => WriteCmdType,
+    }
+
     pub struct RaftReadyVec : LocalIntCounter {
         "type" => RaftReadyType,
     }
@@ -228,6 +239,15 @@ lazy_static! {
         ).unwrap();
     pub static ref PEER_ADMIN_CMD_COUNTER: AdminCmdVec =
         auto_flush_from!(PEER_ADMIN_CMD_COUNTER_VEC, AdminCmdVec);
+
+    pub static ref PEER_WRITE_CMD_COUNTER_VEC: IntCounterVec =
+        register_int_counter_vec!(
+            "tikv_raftstore_write_cmd_total",
+            "Total number of write cmd processed.",
+            &["type"]
+        ).unwrap();
+    pub static ref PEER_WRITE_CMD_COUNTER: WriteCmdVec =
+        auto_flush_from!(PEER_WRITE_CMD_COUNTER_VEC, WriteCmdVec);
 
     pub static ref PEER_APPEND_LOG_HISTOGRAM: Histogram =
         register_histogram!(
@@ -330,6 +350,11 @@ lazy_static! {
             "tikv_raftstore_log_lag_region_total",
             "Total number of region which has log lag.",
             &["store"]
+        ).unwrap();
+    pub static ref APPLY_LAG_REGION_GAUGE: IntGauge =
+        register_int_gauge!(
+            "tikv_raftstore_apply_lag_region_total",
+            "Total number of region which has apply lag."
         ).unwrap();
     pub static ref REGION_MAX_LOG_LAG: Histogram =
         register_histogram!(
