@@ -94,6 +94,7 @@ pub struct StoreMeta {
     pub store_id: Option<u64>,
     /// store_id -> count of region
     pub store_log_lag: HashMap<u64, u64>,
+    pub apply_lag_region: u64,
     /// region_end_key -> region_id
     pub region_ranges: BTreeMap<Vec<u8>, u64>,
     /// region_id -> region
@@ -129,6 +130,7 @@ impl StoreMeta {
         StoreMeta {
             store_id: None,
             store_log_lag: HashMap::default(),
+            apply_lag_region: 0,
             region_ranges: BTreeMap::default(),
             regions: HashMap::default(),
             readers: HashMap::default(),
