@@ -23,6 +23,7 @@ use crate::store::util;
 use crate::store::ProposalContext;
 use crate::{Error, Result};
 use crate::store::worker::RaftLogFetchTask;
+use crate::store::{util, RaftLogFetchResult};
 use collections::{HashMap, HashMapEntry};
 use engine_traits::{RaftEngine, RaftLogBatch};
 use into_other::into_other;
@@ -617,14 +618,37 @@ where
 
     // Entry cache if `ER doesn't have an internal entry cache.
     cache: Option<EntryCache>,
+
+    raftlog_fetch_scheduler: Scheduler<RaftLogFetchTask>,
+    raftlog_fetch_stats: AsyncFetchStats,
+    async_fetch_cache: RefCell<HashMap<u64, Option<RaftLogFetchResult>>>,
+
+    pub tag: String,
+}
+
+#[derive(Default)]
+struct AsyncFetchStats {
     async_fetch: Cell<u64>,
     sync_fetch: Cell<u64>,
     fallback_fetch: Cell<u64>,
+    fetch_invalid: Cell<u64>,
+}
 
-    raftlog_fetch_scheduler: Scheduler<RaftLogFetchTask>,
-    temp_cache: RefCell<HashMap<u64, Option<raft::Result<Vec<Entry>>>>>,
-
-    pub tag: String,
+impl AsyncFetchStats {
+    fn flush_stats(&mut self) {
+        RAFT_ENTRY_FETCHES
+            .async_fetch
+            .inc_by(self.async_fetch.replace(0));
+        RAFT_ENTRY_FETCHES
+            .sync_fetch
+            .inc_by(self.sync_fetch.replace(0));
+        RAFT_ENTRY_FETCHES
+            .fallback_fetch
+            .inc_by(self.fallback_fetch.replace(0));
+        RAFT_ENTRY_FETCHES
+            .fetch_invalid
+            .inc_by(self.fetch_invalid.replace(0));
+    }
 }
 
 impl<EK, ER> Storage for PeerStorage<EK, ER>
@@ -708,10 +732,8 @@ where
             applied_index_term,
             last_term,
             cache,
-            async_fetch: Cell::new(0),
-            sync_fetch: Cell::new(0),
-            fallback_fetch: Cell::new(0),
-            temp_cache: RefCell::new(HashMap::default()),
+            async_fetch_cache: RefCell::new(HashMap::default()),
+            raftlog_fetch_stats: AsyncFetchStats::default(),
         })
     }
 
@@ -756,12 +778,12 @@ where
         Ok(())
     }
 
-    pub fn on_raft_log_fetched(&mut self, to_peer: u64, ents: raft::Result<Vec<Entry>>) -> bool {
-        match self.temp_cache.borrow_mut().entry(to_peer) {
+    pub fn on_raft_log_fetched(&mut self, to_peer: u64, res: RaftLogFetchResult) -> bool {
+        match self.async_fetch_cache.borrow_mut().entry(to_peer) {
             HashMapEntry::Occupied(mut entry) => {
                 let o = entry.get_mut();
                 if o.is_none() {
-                    *o = Some(ents);
+                    *o = Some(res);
                     true
                 } else {
                     // unexpected
@@ -777,7 +799,7 @@ where
     }
 
     pub fn clean_peer_temp_cache(&mut self, peer_id: u64) {
-        self.temp_cache.borrow_mut().remove(&peer_id);
+        self.async_fetch_cache.borrow_mut().remove(&peer_id);
     }
 
     fn async_fetch(
@@ -788,8 +810,7 @@ where
         max_size: u64,
         to: u64,
     ) -> raft::Result<Vec<Entry>> {
-        // TODO: check gc temp_cache periodically to avoid leaking memory.
-        if let Some(v) = self.temp_cache.borrow().get(&to) {
+        if let Some(v) = self.async_fetch_cache.borrow().get(&to) {
             if v.is_none() {
                 // already in fetching
                 return Err(raft::Error::Store(
@@ -798,43 +819,75 @@ where
             }
         }
 
-        if let Some(v) = self.temp_cache.borrow_mut().remove(&to) {
-            let mut ents = v.unwrap()?;
-            // check validation
-            return match ents.first() {
-                None => Ok(ents),
-                Some(e) => {
-                    let last = ents.last().map(|e| e.index).unwrap();
-                    if e.index == low {
-                        // check low is enough, it's okay to not return the full entries
-                        Ok(ents)
-                    } else if e.index < low && low <= last {
-                        let idx = (low - e.index) as usize;
-                        Ok(ents.drain(idx..).collect())
+        if let Some(res) = self.async_fetch_cache.borrow_mut().remove(&to) {
+            let res = res.unwrap();
+            match res.ents {
+                Ok(mut ents) => {
+                    match ents.first() {
+                        None => {
+                            if res.low == low {
+                                return Ok(ents);
+                            }
+                            // low index is changed, the result is not fit for the current range anymore
+                            self.raftlog_fetch_stats.fetch_invalid.update(|m| m + 1);
+                        }
+                        Some(Entry { index: first, .. }) => {
+                            let last = ents.last().map(|e| e.index).unwrap();
+                            if *first == low {
+                                // check low is enough, it's okay to not return the full entries
+                                return Ok(ents);
+                            } else if *first < low {
+                                if low <= last {
+                                    // the fetched entries covers [low, ..], high may be
+                                    let idx = (low - first) as usize;
+                                    return Ok(ents
+                                        .drain(
+                                            idx..std::cmp::min(
+                                                ents.len(),
+                                                idx + (high - low) as usize,
+                                            ),
+                                        )
+                                        .collect());
+                                } else {
+                                    // the fetched entries doesn't cover [low, high]
+                                    self.raftlog_fetch_stats.fetch_invalid.update(|m| m + 1);
+                                }
+                            } else if *first > low {
+                                info!(
+                                    "fallback to fetch the missing log entries [{}, {}) in sync way",
+                                    low, *first
+                                );
+                                self.raftlog_fetch_stats.fallback_fetch.update(|m| m + 1);
+                                let mut full_ents = vec![];
+                                self.engines.raft.fetch_entries_to(
+                                    region_id,
+                                    low,
+                                    *first,
+                                    Some(max_size as usize),
+                                    &mut full_ents,
+                                )?;
+                                if full_ents.last().map(|e| e.index).unwrap_or_default()
+                                    == *first - 1
+                                {
+                                    full_ents.append(&mut ents);
+                                };
+                                return Ok(full_ents);
+                            }
+                        }
+                    };
+                }
+                Err(e) => {
+                    if res.low == low {
+                        return Err(e);
                     } else {
-                        self.fallback_fetch.update(|m| m + 1);
-                        // fallback to fetch the missing log entires in sync way
-                        let mut full_ents = vec![];
-                        self.engines.raft.fetch_entries_to(
-                            region_id,
-                            low,
-                            e.index,
-                            Some(max_size as usize),
-                            &mut full_ents,
-                        )?;
-                        assert_eq!(
-                            full_ents.last().map(|e| e.index).unwrap_or_default(),
-                            e.index - 1
-                        );
-                        full_ents.append(&mut ents);
-                        Ok(full_ents)
+                        self.raftlog_fetch_stats.fetch_invalid.update(|m| m + 1);
                     }
                 }
-            };
+            }
         }
 
-        self.async_fetch.update(|m| m + 1);
-        self.temp_cache.borrow_mut().insert(to, None);
+        self.raftlog_fetch_stats.async_fetch.update(|m| m + 1);
+        self.async_fetch_cache.borrow_mut().insert(to, None);
         self.raftlog_fetch_scheduler
             .schedule(RaftLogFetchTask::SendAppend {
                 region_id,
@@ -1242,12 +1295,7 @@ where
             cache.flush_stats();
             return;
         }
-        let async_fetch = self.async_fetch.replace(0);
-        RAFT_ENTRY_FETCHES.async_fetch.inc_by(async_fetch);
-        let sync_fetch = self.sync_fetch.replace(0);
-        RAFT_ENTRY_FETCHES.sync_fetch.inc_by(sync_fetch);
-        let fallback_fetch = self.fallback_fetch.replace(0);
-        RAFT_ENTRY_FETCHES.sync_fetch.inc_by(fallback_fetch);
+        self.raftlog_fetch_stats.flush_stats();
         if let Some(stats) = self.engines.raft.flush_stats() {
             RAFT_ENTRIES_CACHES_GAUGE.set(stats.cache_size as i64);
             RAFT_ENTRY_FETCHES.hit.inc_by(stats.hit as i64);

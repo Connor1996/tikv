@@ -4,7 +4,7 @@ use engine_traits::{KvEngine, RaftEngine};
 use std::fmt;
 use tikv_util::worker::Runnable;
 
-use crate::store::{SignificantMsg, SignificantRouter};
+use crate::store::{RaftLogFetchResult, SignificantMsg, SignificantRouter};
 
 pub enum Task {
     SendAppend {
@@ -98,7 +98,10 @@ where
                         region_id,
                         SignificantMsg::RaftLogFetched {
                             to_peer,
-                            ents: res.map(|_| ents).map_err(|e| e.into()),
+                            res: RaftLogFetchResult {
+                                ents: res.map(|_| ents).map_err(|e| e.into()),
+                                low,
+                            },
                         },
                     )
                     .unwrap();

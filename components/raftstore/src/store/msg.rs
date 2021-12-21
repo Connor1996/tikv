@@ -279,8 +279,14 @@ where
     //
     RaftLogFetched {
         to_peer: u64,
-        ents: raft::Result<Vec<Entry>>,
+        res: RaftLogFetchResult,
     },
+}
+
+#[derive(Debug)]
+pub struct RaftLogFetchResult {
+    pub ents: raft::Result<Vec<Entry>>,
+    pub low: u64, // the original low index that the task issued
 }
 
 /// Message that will be sent to a peer.

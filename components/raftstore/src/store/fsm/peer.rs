@@ -884,8 +884,8 @@ where
             SignificantMsg::LeaderCallback(cb) => {
                 self.on_leader_callback(cb);
             }
-            SignificantMsg::RaftLogFetched { to_peer, ents } => {
-                if self.fsm.peer.mut_store().on_raft_log_fetched(to_peer, ents) {
+            SignificantMsg::RaftLogFetched { to_peer, res } => {
+                if self.fsm.peer.mut_store().on_raft_log_fetched(to_peer, res) {
                     self.fsm.peer.raft_group.send_append(to_peer);
                     self.fsm.has_ready = true;
                 }
