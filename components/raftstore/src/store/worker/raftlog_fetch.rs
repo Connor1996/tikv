@@ -93,18 +93,17 @@ where
                     Some(max_size),
                     &mut ents,
                 );
-                self.router
-                    .send(
-                        region_id,
-                        SignificantMsg::RaftLogFetched {
-                            to_peer,
-                            res: RaftLogFetchResult {
-                                ents: res.map(|_| ents).map_err(|e| e.into()),
-                                low,
-                            },
+                // it may return a region not found error as the region could be merged.
+                let _ = self.router.send(
+                    region_id,
+                    SignificantMsg::RaftLogFetched {
+                        to_peer,
+                        res: RaftLogFetchResult {
+                            ents: res.map(|_| ents).map_err(|e| e.into()),
+                            low,
                         },
-                    )
-                    .unwrap();
+                    },
+                );
             }
             _ => panic!(),
         }
