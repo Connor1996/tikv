@@ -276,7 +276,7 @@ where
         callback: Callback<SK>,
     },
     LeaderCallback(Callback<SK>),
-    //
+    // Reports the result of asynchronous Raft logs fetching.
     RaftLogFetched {
         to_peer: u64,
         res: RaftLogFetchResult,
