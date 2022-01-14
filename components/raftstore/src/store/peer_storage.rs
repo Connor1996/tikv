@@ -23,7 +23,7 @@ use crate::store::util;
 use crate::store::ProposalContext;
 use crate::{Error, Result};
 use crate::store::worker::RaftLogFetchTask;
-use crate::store::{util, RaftLogFetchResult};
+use crate::store::RaftLogFetchResult;
 use collections::{HashMap, HashMapEntry};
 use engine_traits::{RaftEngine, RaftLogBatch};
 use into_other::into_other;
@@ -613,7 +613,7 @@ where
 
     snap_state: RefCell<SnapState>,
     gen_snap_task: RefCell<Option<GenSnapTask>>,
-    region_sched: Scheduler<RegionTask<EK::Snapshot>>,
+    region_scheduler: Scheduler<RegionTask<EK::Snapshot>>,
     snap_tried_cnt: RefCell<usize>,
 
     // Entry cache if `ER doesn't have an internal entry cache.
@@ -638,16 +638,16 @@ impl AsyncFetchStats {
     fn flush_stats(&mut self) {
         RAFT_ENTRY_FETCHES
             .async_fetch
-            .inc_by(self.async_fetch.replace(0));
+            .inc_by(self.async_fetch.replace(0) as i64);
         RAFT_ENTRY_FETCHES
             .sync_fetch
-            .inc_by(self.sync_fetch.replace(0));
+            .inc_by(self.sync_fetch.replace(0) as i64);
         RAFT_ENTRY_FETCHES
             .fallback_fetch
-            .inc_by(self.fallback_fetch.replace(0));
+            .inc_by(self.fallback_fetch.replace(0) as i64);
         RAFT_ENTRY_FETCHES
             .fetch_invalid
-            .inc_by(self.fetch_invalid.replace(0));
+            .inc_by(self.fetch_invalid.replace(0) as i64);
     }
 }
 
@@ -665,8 +665,9 @@ where
         low: u64,
         high: u64,
         max_size: impl Into<Option<u64>>,
+        async_to: Option<u64>,
     ) -> raft::Result<Vec<Entry>> {
-        self.entries(low, high, max_size.into().unwrap_or(u64::MAX))
+        self.entries(low, high, max_size.into().unwrap_or(u64::MAX), async_to)
     }
 
     fn term(&self, idx: u64) -> raft::Result<u64> {
@@ -694,7 +695,8 @@ where
     pub fn new(
         engines: Engines<EK, ER>,
         region: &metapb::Region,
-        region_sched: Scheduler<RegionTask<EK::Snapshot>>,
+        region_scheduler: Scheduler<RegionTask<EK::Snapshot>>,
+        raftlog_fetch_scheduler: Scheduler<RaftLogFetchTask>,
         peer_id: u64,
         tag: String,
     ) -> Result<PeerStorage<EK, ER>> {
@@ -726,13 +728,14 @@ where
             apply_state,
             snap_state: RefCell::new(SnapState::Relax),
             gen_snap_task: RefCell::new(None),
-            region_sched,
+            region_scheduler,
             snap_tried_cnt: RefCell::new(0),
             tag,
             applied_index_term,
             last_term,
             cache,
             async_fetch_cache: RefCell::new(HashMap::default()),
+            raftlog_fetch_scheduler: raftlog_fetch_scheduler,
             raftlog_fetch_stats: AsyncFetchStats::default(),
         })
     }
@@ -921,7 +924,7 @@ where
                 cache.miss.update(|m| m + 1);
                 match async_to {
                     None => {
-                        self.sync_fetch.update(|m| m + 1);
+                        self.raftlog_fetch_stats.sync_fetch.update(|m| m + 1);
                         self.engines.raft.fetch_entries_to(
                             region_id,
                             low,
@@ -940,7 +943,7 @@ where
                 cache.miss.update(|m| m + 1);
                 let fetched_count = match async_to {
                     None => {
-                        self.sync_fetch.update(|m| m + 1);
+                        self.raftlog_fetch_stats.sync_fetch.update(|m| m + 1);
                         self.engines.raft.fetch_entries_to(
                             region_id,
                             low,
@@ -968,14 +971,28 @@ where
             let fetched_size = ents.iter().fold(0, |acc, e| acc + e.compute_size());
             cache.fetch_entries_to(begin_idx, high, fetched_size as u64, max_size, &mut ents);
         } else {
-            let mut tmp_ents = self.async_fetch(
-                region_id,
-                low,
-                high,
-                Some(max_size as usize),
-                to, 
-            )?;
-            ents.append(&mut tmp_ents);
+            match async_to {
+                None => {
+                    self.raftlog_fetch_stats.sync_fetch.update(|m| m + 1);
+                    self.engines.raft.fetch_entries_to(
+                        region_id,
+                        low,
+                        high,
+                        Some(max_size as usize),
+                        &mut ents,
+                    )?;
+                }
+                Some(to) => {
+                    let mut tmp_ents = self.async_fetch(
+                        region_id,
+                        low,
+                        high,
+                        max_size,
+                        to, 
+                    )?;
+                    ents.append(&mut tmp_ents);
+                }
+            }
         }
         Ok(ents)
     }
@@ -988,7 +1005,7 @@ where
         if self.truncated_term() == self.last_term || idx == self.last_index() {
             return Ok(self.last_term);
         }
-        let entries = self.entries(idx, idx + 1, raft::NO_LIMIT)?;
+        let entries = self.entries(idx, idx + 1, raft::NO_LIMIT, None)?;
         Ok(entries[0].get_term())
     }
 
@@ -1387,7 +1404,7 @@ where
         let (start_key, end_key) = (enc_start_key(self.region()), enc_end_key(self.region()));
         let region_id = self.get_region_id();
         box_try!(self
-            .region_sched
+            .region_scheduler
             .schedule(RegionTask::destroy(region_id, start_key, end_key)));
         Ok(())
     }
@@ -1401,14 +1418,14 @@ where
         let (old_start_key, old_end_key) = (enc_start_key(old_region), enc_end_key(old_region));
         let (new_start_key, new_end_key) = (enc_start_key(new_region), enc_end_key(new_region));
         if old_start_key < new_start_key {
-            box_try!(self.region_sched.schedule(RegionTask::destroy(
+            box_try!(self.region_scheduler.schedule(RegionTask::destroy(
                 old_region.get_id(),
                 old_start_key,
                 new_start_key
             )));
         }
         if new_end_key < old_end_key {
-            box_try!(self.region_sched.schedule(RegionTask::destroy(
+            box_try!(self.region_scheduler.schedule(RegionTask::destroy(
                 old_region.get_id(),
                 new_end_key,
                 old_end_key
@@ -1419,7 +1436,7 @@ where
 
     /// Delete all extra split data from the `start_key` to `end_key`.
     pub fn clear_extra_split_data(&self, start_key: Vec<u8>, end_key: Vec<u8>) -> Result<()> {
-        box_try!(self.region_sched.schedule(RegionTask::destroy(
+        box_try!(self.region_scheduler.schedule(RegionTask::destroy(
             self.get_region_id(),
             start_key,
             end_key
@@ -1543,7 +1560,7 @@ where
         fail_point!("skip_schedule_applying_snapshot", |_| {});
 
         // TODO: gracefully remove region instead.
-        if let Err(e) = self.region_sched.schedule(task) {
+        if let Err(e) = self.region_scheduler.schedule(task) {
             info!(
                 "failed to to schedule apply job, are we shutting down?";
                 "region_id" => self.region.get_id(),
@@ -2789,7 +2806,7 @@ mod tests {
     fn test_validate_states() {
         let td = Builder::new().prefix("tikv-store-test").tempdir().unwrap();
         let region_worker = LazyWorker::new("snap-manager");
-        let region_sched = region_worker.scheduler();
+        let region_scheduler = region_worker.scheduler();
         let raftlog_fetch_worker = LazyWorker::new("raftlog-fetch");
         let raftlog_fetch_sched = raftlog_fetch_worker.scheduler();
         let kv_db =
@@ -2807,7 +2824,7 @@ mod tests {
             PeerStorage::new(
                 engines.clone(),
                 &region,
-                region_sched.clone(),
+                region_scheduler.clone(),
                 raftlog_fetch_sched.clone(),
                 0,
                 "".to_owned(),

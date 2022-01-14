@@ -43,7 +43,7 @@ use crate::store::fsm::store::PollContext;
 use crate::store::fsm::{apply, Apply, ApplyMetrics, ApplyTask, CollectedReady, Proposal};
 use crate::store::hibernate_state::GroupState;
 use crate::store::msg::RaftCommand;
-use crate::store::worker::{HeartbeatTask, ReadDelegate, ReadExecutor, ReadProgress, RegionTask};
+use crate::store::worker::{HeartbeatTask, RaftLogFetchTask, ReadDelegate, ReadExecutor, ReadProgress, RegionTask};
 use crate::store::{
     Callback, Config, GlobalReplicationState, PdTask, ReadIndexContext, ReadResponse,
 };
@@ -71,7 +71,7 @@ use super::DestroyPeerJob;
 
 const SHRINK_CACHE_CAPACITY: usize = 64;
 const MIN_BCAST_WAKE_UP_INTERVAL: u64 = 1_000; // 1s
-const ON_START_MARK: bytes::Bytes = bytes::Bytes::from_static(&[0]);
+const ON_START_MARK: Vec<u8> = vec![0];
 
 /// The returned states of the peer after checking whether it is stale
 #[derive(Debug, PartialEq, Eq)]
@@ -521,7 +521,8 @@ where
     pub fn new(
         store_id: u64,
         cfg: &Config,
-        sched: Scheduler<RegionTask<EK::Snapshot>>,
+        region_scheduler: Scheduler<RegionTask<EK::Snapshot>>,
+        raftlog_fetch_scheduler: Scheduler<RaftLogFetchTask>,
         engines: Engines<EK, ER>,
         region: &metapb::Region,
         peer: metapb::Peer,
@@ -532,7 +533,8 @@ where
 
         let tag = format!("[region {}] {}", region.get_id(), peer.get_id());
 
-        let ps = PeerStorage::new(engines, region, sched, peer.get_id(), tag.clone())?;
+        let ps = PeerStorage::new(engines, region, region_scheduler,
+            raftlog_fetch_scheduler, peer.get_id(), tag.clone())?;
 
         let applied_index = ps.applied_index();
 
@@ -2156,7 +2158,7 @@ where
 
         let diff = match (
             self.in_apply_lag,
-            self.get_store().commit_index() - applied_index > ctx.cfg.leader_transfer_max_log_lag,
+            self.get_store().commit_index() - apply_state.get_applied_index() > ctx.cfg.leader_transfer_max_log_lag,
         ) {
             (true, false) => {
                 self.in_apply_lag = false;
@@ -2922,7 +2924,7 @@ where
             .raft_group
             .raft
             .raft_log
-            .entries(min_committed + 1, NO_LIMIT)?
+            .entries(min_committed + 1, NO_LIMIT, None)?
         {
             // commit merge only contains entries start from min_matched + 1
             if entry.index > min_matched {
@@ -3096,7 +3098,7 @@ where
                 Some(p) => p,
                 None => return,
             };
-            match self.ready_to_transfer_leader(ctx, msg.get_index(), &from) {
+            match self.ready_to_transfer_leader(ctx, &msg, &from) {
                 Some(reason) => {
                     info!(
                         "reject to transfer leader";

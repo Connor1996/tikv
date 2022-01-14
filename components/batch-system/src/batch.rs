@@ -550,6 +550,7 @@ where
             let mut poller = Poller {
                 router: self.router.clone(),
                 fsm_receiver: self.receiver.clone(),
+                high_pri_fsm_receiver: self.high_pri_receiver.clone(),
                 handler,
                 max_batch_size: self.max_batch_size,
                 reschedule_duration: self.reschedule_duration,
@@ -608,7 +609,7 @@ pub fn create_system<N: Fsm, C: Fsm>(
         sender: tx2.clone(),
     };
     let control_scheduler = ControlScheduler { sender: tx };
-    let router = Router::new(control_box, normal_scheduler, control_scheduler);
+    let router = Router::new(control_box, normal_scheduler,high_pri_normal_scheduler, control_scheduler);
     let system = BatchSystem {
         name_prefix: None,
         router: router.clone(),
