@@ -3623,11 +3623,6 @@ impl<EK> ApplyRouter<EK>
 where
     EK: KvEngine,
 {
-    pub fn schedule_task_high_pri(&self, region_id: u64, msg: Msg<EK>) {
-        let res = self.try_send(region_id, msg, true);
-        self.schedule_task_inner(region_id, res);
-    }
-
     pub fn schedule_task(&self, region_id: u64, msg: Msg<EK>) {
         let res = self.try_send(region_id, msg, false);
         self.schedule_task_inner(region_id, res);

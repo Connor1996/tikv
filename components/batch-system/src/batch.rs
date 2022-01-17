@@ -356,10 +356,6 @@ impl<N: Fsm, C: Fsm, Handler: PollHandler<N, C>> Poller<N, C, Handler> {
             return true;
         }
 
-        if let Ok(fsm) = self.high_pri_fsm_receiver.try_recv() {
-            return batch.push(fsm);
-        }
-
         if let Ok(fsm) = self.fsm_receiver.try_recv() {
             return batch.push(fsm);
         }
@@ -438,30 +434,6 @@ impl<N: Fsm, C: Fsm, Handler: PollHandler<N, C>> Poller<N, C, Handler> {
                 }
             }
             let mut fsm_cnt = batch.normals.len();
-            while batch.normals.len() < max_batch_size {
-                if let Ok(fsm) = self.high_pri_fsm_receiver.try_recv() {
-                    run = batch.push(fsm);
-                }
-                // If we receive a ControlFsm, break this cycle and call `end`. Because ControlFsm
-                // may change state of the handler, we shall deal with it immediately after
-                // calling `begin` of `Handler`.
-                if !run || fsm_cnt >= batch.normals.len() {
-                    break;
-                }
-                let p = batch.normals[fsm_cnt].as_mut().unwrap();
-                let res = self.handler.handle_normal(p);
-                if p.is_stopped() {
-                    p.policy = Some(ReschedulePolicy::Remove);
-                    reschedule_fsms.push(fsm_cnt);
-                } else if let HandleResult::StopAt { progress, skip_end } = res {
-                    p.policy = Some(ReschedulePolicy::Release(progress));
-                    reschedule_fsms.push(fsm_cnt);
-                    if skip_end {
-                        to_skip_end.push(fsm_cnt);
-                    }
-                }
-                fsm_cnt += 1;
-            }
 
             while batch.normals.len() < max_batch_size {
                 if let Ok(fsm) = self.fsm_receiver.try_recv() {
