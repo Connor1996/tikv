@@ -1971,8 +1971,6 @@ mod tests {
         let mut kv_wb = store.engines.kv.write_batch();
         let mut ctx = InvokeContext::new(&store);
         let mut ready_ctx = ReadyContext::new(&store);
-        store.append(ents[1..].to_vec(), &mut write_task);
-        store.update_cache_persisted(ents.last().unwrap().get_index());
         store
             .append(&mut ctx, ents[1..].to_vec(), &mut ready_ctx)
             .unwrap();
@@ -2037,7 +2035,7 @@ mod tests {
         ];
         for (i, (idx, wterm)) in tests.drain(..).enumerate() {
             let td = Builder::new().prefix("tikv-store-test").tempdir().unwrap();
-            let worker = Worker::new("snap-manager").lazy_build();
+            let worker = Worker::new("snap-manager").lazy_build("snap-manager");
             let sched = worker.scheduler();
             let (dummy_scheduler, _) = dummy_scheduler();
             let store = new_storage_from_ents(sched, dummy_scheduler, &td, &ents);
@@ -2092,7 +2090,7 @@ mod tests {
     #[test]
     fn test_storage_clear_meta() {
         let td = Builder::new().prefix("tikv-store").tempdir().unwrap();
-        let worker = Worker::new("snap-manager").lazy_build();
+        let worker = Worker::new("snap-manager").lazy_build("snap-manager");
         let sched = worker.scheduler();
         let (dummy_scheduler, _) = dummy_scheduler();
         let mut store = new_storage_from_ents(
@@ -2213,15 +2211,15 @@ mod tests {
                 router,
                 store.engines.raft.clone(),
             ));
-            store.compact_cache_to(5);
+            store.compact_to(5);
             let mut e = store.entries(lo, hi, maxsize, Some(0));
             if e == Err(raft::Error::Store(
                 raft::StorageError::LogTemporarilyUnavailable,
             )) {
                 let res = rx.recv().unwrap();
                 match res {
-                    SignificantMsg::RaftLogFetched { to_peer, ents } => {
-                        assert_eq!(store.on_raft_log_fetched(to_peer, ents), true);
+                    SignificantMsg::RaftLogFetched { to_peer, res } => {
+                        assert_eq!(store.on_raft_log_fetched(to_peer, res), true);
                     }
                     _ => unreachable!(),
                 };
@@ -2250,10 +2248,10 @@ mod tests {
         ];
         for (i, (idx, werr)) in tests.drain(..).enumerate() {
             let td = Builder::new().prefix("tikv-store-test").tempdir().unwrap();
-            let worker = Worker::new("snap-manager").lazy_build();
+            let worker = Worker::new("snap-manager").lazy_build("snap-manager");
             let sched = worker.scheduler();
             let (dummy_scheduler, _) = dummy_scheduler();
-            let mut store = new_storage_from_ents(sched, dummy_scheduler, &td, &ents);
+            let store = new_storage_from_ents(sched, dummy_scheduler, &td, &ents);
             let mut ctx = InvokeContext::new(&store);
             let res = store
                 .term(idx)
