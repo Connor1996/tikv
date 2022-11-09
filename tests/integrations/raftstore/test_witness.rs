@@ -149,7 +149,7 @@ fn test_witness_conf_change() {
         .pd_client
         .must_remove_peer(region.get_id(), peer_on_store3.clone());
     peer_on_store3.set_is_witness(true);
-    let applied_index = cluster.apply_state(1, 2).applied_index;
+    let applied_index = cluster.apply_state(region.get_id(), nodes[0]).applied_index;
     cluster
         .pd_client
         .must_add_peer(region.get_id(), peer_on_store3.clone());
