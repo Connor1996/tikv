@@ -148,7 +148,7 @@ where
     AutoSplit {
         split_infos: Vec<SplitInfo>,
     },
-    Heartbeat(HeartbeatTask),
+    Heartbeat(Box<HeartbeatTask>),
     StoreHeartbeat {
         stats: pdpb::StoreStats,
         store_info: StoreInfo<EK, ER>,

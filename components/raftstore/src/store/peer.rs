@@ -5159,7 +5159,7 @@ where
     }
 
     pub fn heartbeat_pd<T>(&mut self, ctx: &PollContext<EK, ER, T>) {
-        let task = PdTask::Heartbeat(HeartbeatTask {
+        let task = PdTask::Heartbeat(Box::new(HeartbeatTask {
             term: self.term(),
             region: self.region().clone(),
             down_peers: self.collect_down_peers(ctx),
@@ -5171,7 +5171,7 @@ where
             approximate_keys: self.approximate_keys,
             replication_status: self.region_replication_status(),
             wait_data_peers: self.wait_data_peers.clone(),
-        });
+        }));
         if let Err(e) = ctx.pd_scheduler.schedule(task) {
             error!(
                 "failed to notify pd";

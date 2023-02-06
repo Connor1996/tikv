@@ -117,25 +117,38 @@ pub struct StoreInfo<EK, ER> {
     pub capacity: u64,
 }
 
+use datasize::DataSize;
+
+fn estimate_third_party_type(value: &HashMap<u64, Region>) -> usize {
+    // We assume every item is 512 bytes in heap size.
+    value.len() * 512
+}
+
+#[derive(DataSize)]
 pub struct StoreMeta {
     pub store_id: Option<u64>,
     /// region_end_key -> region_id
     pub region_ranges: BTreeMap<Vec<u8>, u64>,
     /// region_id -> region
+    #[data_size(with = estimate_third_party_type)]
     pub regions: HashMap<u64, Region>,
     /// region_id -> reader
+    #[data_size(skip)]
     pub readers: HashMap<u64, ReadDelegate>,
     /// `MsgRequestPreVote`, `MsgRequestVote` or `MsgAppend` messages from newly
     /// split Regions shouldn't be dropped if there is no such Region in this
     /// store now. So the messages are recorded temporarily and will be handled
     /// later.
+    #[data_size(skip)]
     pub pending_msgs: RingQueue<RaftMessage>,
     /// The regions with pending snapshots.
+    #[data_size(skip)]
     pub pending_snapshot_regions: Vec<Region>,
     /// A marker used to indicate the peer of a Region has received a merge
     /// target message and waits to be destroyed. target_region_id ->
     /// (source_region_id -> merge_target_region)
-    pub pending_merge_targets: HashMap<u64, HashMap<u64, metapb::Region>>,
+    #[data_size(skip)]
+    pub pending_merge_targets: HashMap<u64, HashMap<u64, Region>>,
     /// An inverse mapping of `pending_merge_targets` used to let source peer
     /// help target peer to clean up related entry. source_region_id ->
     /// target_region_id
@@ -151,6 +164,7 @@ pub struct StoreMeta {
     /// `atomic_snap_regions`.
     pub destroyed_region_for_snap: HashMap<u64, bool>,
     /// region_id -> `RegionReadProgress`
+    #[data_size(skip)]
     pub region_read_progress: RegionReadProgressRegistry,
     /// record sst_file_name -> (sst_smallest_key, sst_largest_key)
     pub damaged_ranges: HashMap<String, (Vec<u8>, Vec<u8>)>,
@@ -189,6 +203,10 @@ impl StoreMeta {
         }
         let reader = self.readers.get_mut(&region.get_id()).unwrap();
         peer.set_region(host, reader, region, reason);
+    }
+
+    pub fn update_trace(&self) {
+        MEMTRACE_STORE_META.trace(TraceEvent::Reset(datasize::data_size(self)));
     }
 
     /// Update damaged ranges and return true if overlap exists.
@@ -2464,6 +2482,7 @@ impl<'a, EK: KvEngine, ER: RaftEngine, T: Transport> StoreFsmDelegate<'a, EK, ER
     }
 
     fn on_pd_store_heartbeat_tick(&mut self) {
+        self.ctx.store_meta.lock().unwrap().update_trace();
         self.store_heartbeat_pd(None);
         self.register_pd_store_heartbeat_tick();
     }

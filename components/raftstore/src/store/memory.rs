@@ -21,7 +21,8 @@ lazy_static! {
             (raft_router, [alive, leak]),
             (apply_router, [alive, leak]),
             raft_messages,
-            raft_entries
+            raft_entries,
+            store_meta
         ]
     );
     /// Memory usage for raft peers fsms.
@@ -34,6 +35,9 @@ lazy_static! {
 
     pub static ref MEMTRACE_ENTRY_CACHE: Arc<MemoryTrace> =
         MEMTRACE_ROOT.sub_trace(Id::Name("entry_cache"));
+
+    pub static ref MEMTRACE_STORE_META: Arc<MemoryTrace> =
+        MEMTRACE_ROOT.sub_trace(Id::Name("store_meta"));
 
     pub static ref MEMTRACE_RAFT_ROUTER_ALIVE: Arc<MemoryTrace> = MEMTRACE_ROOT
         .sub_trace(Id::Name("raft_router"))

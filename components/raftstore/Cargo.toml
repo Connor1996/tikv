@@ -89,6 +89,7 @@ time = "0.1"
 tokio = { version = "1.5", features = ["sync", "rt-multi-thread"] }
 tracker = { workspace = true }
 txn_types = { workspace = true }
+datasize = "0.2.13"
 uuid = { version = "0.8.1", features = ["serde", "v4"] }
 yatp = { git = "https://github.com/tikv/yatp.git", branch = "master" }
 
