@@ -1349,7 +1349,7 @@ where
 
     fn build(&mut self, _: Priority) -> RaftPoller<EK, ER, T> {
         let sync_write_worker = if self.write_senders.is_empty() {
-            let (_, rx) = unbounded(None);
+            let (_, rx) = unbounded(None, "".to_string());
             Some(WriteWorker::new(
                 self.store.get_id(),
                 "sync-writer".to_string(),
@@ -1833,6 +1833,7 @@ pub fn create_raft_batch_system<EK: KvEngine, ER: RaftEngine>(
         resource_manager
             .as_ref()
             .map(|m| m.derive_controller("store".to_owned(), false)),
+        "store".to_owned(),
     );
     let raft_router = RaftRouter { router };
     let system = RaftBatchSystem {

@@ -4875,6 +4875,7 @@ pub fn create_apply_batch_system<EK: KvEngine>(
         control_tx,
         control_fsm,
         resource_ctl,
+        "apply".to_owned(),
     );
     (ApplyRouter { router }, ApplyBatchSystem { system })
 }

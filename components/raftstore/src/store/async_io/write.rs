@@ -1000,6 +1000,7 @@ where
                     let (tx, rx) = bounded(
                         resource_ctl.clone(),
                         writer_meta.cfg.value().store_io_notify_capacity,
+                        "store-writer".to_string(),
                     );
                     let mut worker = Worker::new(
                         writer_meta.store_id,

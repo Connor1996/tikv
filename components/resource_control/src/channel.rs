@@ -5,9 +5,20 @@ use std::{cell::RefCell, sync::Arc};
 use collections::HashMap;
 use crossbeam::channel::{self, RecvError, SendError, TryRecvError, TrySendError};
 use kvproto::kvrpcpb::CommandPri;
+use lazy_static::lazy_static;
+use prometheus::{register_int_counter_vec, IntCounterVec};
 use tikv_util::mpsc::priority_queue;
 
 use crate::{ResourceConsumeType, ResourceController};
+
+lazy_static! {
+    pub static ref CHANNEL_RESOURCE_GROUP_COUNTER_VEC: IntCounterVec = register_int_counter_vec!(
+        "tikv_channel_resource_group_total",
+        "Total number of handle grpc message for each resource group",
+        &["comp", "name"]
+    )
+    .unwrap();
+}
 
 pub trait ResourceMetered {
     // returns the msg consumption of each hash map
@@ -19,6 +30,7 @@ pub trait ResourceMetered {
 pub fn bounded<T: Send + 'static>(
     resource_ctl: Option<Arc<ResourceController>>,
     cap: usize,
+    name: String,
 ) -> (Sender<T>, Receiver<T>) {
     if let Some(ctl) = resource_ctl {
         // TODO: make it bounded
@@ -28,6 +40,7 @@ pub fn bounded<T: Send + 'static>(
                 resource_ctl: ctl,
                 sender: tx,
                 last_msg_group: RefCell::new(String::new()),
+                name,
             },
             Receiver::Priority(rx),
         )
@@ -39,6 +52,7 @@ pub fn bounded<T: Send + 'static>(
 
 pub fn unbounded<T: Send + 'static>(
     resource_ctl: Option<Arc<ResourceController>>,
+    name: String,
 ) -> (Sender<T>, Receiver<T>) {
     if let Some(ctl) = resource_ctl {
         let (tx, rx) = priority_queue::unbounded();
@@ -47,6 +61,7 @@ pub fn unbounded<T: Send + 'static>(
                 resource_ctl: ctl,
                 sender: tx,
                 last_msg_group: RefCell::new(String::new()),
+                name,
             },
             Receiver::Priority(rx),
         )
@@ -62,6 +77,7 @@ pub enum Sender<T: Send + 'static> {
         resource_ctl: Arc<ResourceController>,
         sender: priority_queue::Sender<T>,
         last_msg_group: RefCell<String>,
+        name: String,
     },
 }
 
@@ -72,11 +88,13 @@ impl<T: Send + 'static> Clone for Sender<T> {
             Sender::Priority {
                 resource_ctl,
                 sender,
+                name,
                 ..
             } => Sender::Priority {
                 resource_ctl: resource_ctl.clone(),
                 sender: sender.clone(),
                 last_msg_group: RefCell::new(String::new()),
+                name: name.clone(),
             },
         }
     }
@@ -94,8 +112,12 @@ impl<T: Send + 'static> Sender<T> {
                 resource_ctl,
                 sender,
                 last_msg_group,
+                name,
             } => {
                 // TODO: pass different command priority
+                CHANNEL_RESOURCE_GROUP_COUNTER_VEC
+                    .with_label_values(&[&name, last_msg_group.borrow().as_str()])
+                    .inc();
                 let priority = std::cmp::max(
                     resource_ctl
                         .get_priority(last_msg_group.borrow().as_bytes(), CommandPri::Normal),
@@ -113,13 +135,19 @@ impl<T: Send + 'static> Sender<T> {
                 resource_ctl,
                 sender,
                 last_msg_group,
+                name, 
             } => {
                 let priority = std::cmp::max(
                     resource_ctl
                         .get_priority(last_msg_group.borrow().as_bytes(), CommandPri::Normal),
                     low_bound,
                 );
-                sender.try_send(m, priority).map(|_| priority)
+                sender.try_send(m, priority).map(|_| {
+                    CHANNEL_RESOURCE_GROUP_COUNTER_VEC
+                        .with_label_values(&[&name, last_msg_group.borrow().as_str()])
+                        .inc();
+                    priority
+                })
             }
         }
     }

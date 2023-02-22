@@ -782,11 +782,8 @@ impl<EK: KvEngine> ResourceMetered for PeerMsg<EK> {
                 let header = cmd.request.get_header();
                 let group_name = header.get_resource_group_name().to_owned();
                 // TODO: compute size is not accurate enough
-                *map.entry(group_name).or_default() += cmd
-                    .request
-                    .requests
-                    .iter()
-                    .fold(0, |acc, x| acc + 1);
+                *map.entry(group_name).or_default() +=
+                    cmd.request.requests.iter().fold(0, |acc, x| acc + 1);
                 Some(map)
             }
             PeerMsg::RaftMessage(msg) => {

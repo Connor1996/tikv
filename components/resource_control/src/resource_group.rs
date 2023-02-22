@@ -268,7 +268,7 @@ impl ResourceController {
     pub fn get_priority(&self, name: &[u8], pri: CommandPri) -> u64 {
         let level = match pri {
             CommandPri::Low => 2,
-            CommandPri::Normal => 1,
+            CommandPri::Normal => 0,
             CommandPri::High => 0,
         };
         self.resource_group(name).get_priority(level)

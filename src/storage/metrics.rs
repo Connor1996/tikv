@@ -444,6 +444,12 @@ lazy_static! {
         &["cf"]
     )
     .unwrap();
+    pub static ref SCHED_RESOURCE_GROUP_COUNTER_VEC: IntCounterVec = register_int_counter_vec!(
+        "tikv_sched_resource_group_total",
+        "Total number of handle grpc message for each resource group",
+        &["name"]
+    )
+    .unwrap();
     pub static ref SCHED_THROTTLE_ACTION_COUNTER: IntCounterVec = {
         register_int_counter_vec!(
             "tikv_scheduler_throttle_action_total",

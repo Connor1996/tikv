@@ -145,15 +145,20 @@ impl SchedPool {
                 };
                 // TODO: maybe use a better way to generate task_id
                 let task_id = rand::random::<u64>();
+                let group_name1 = group_name.as_bytes().to_owned();
+                let group_name = group_name.to_owned();
                 let mut extras = Extras::new_multilevel(task_id, fixed_level);
-                extras.set_metadata(group_name.as_bytes().to_owned());
+                extras.set_metadata(group_name1.clone());
                 worker_pool.spawn_with_extras(
                     ControlledFuture::new(
                         async move {
                             f.await;
+                            SCHED_RESOURCE_GROUP_COUNTER_VEC
+                                .with_label_values(&[&group_name])
+                                .inc();
                         },
                         resource_ctl.clone(),
-                        group_name.as_bytes().to_owned(),
+                        group_name1,
                     ),
                     extras,
                 )

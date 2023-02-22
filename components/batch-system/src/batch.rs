@@ -658,11 +658,12 @@ pub fn create_system<N: Fsm, C: Fsm>(
     sender: mpsc::LooseBoundedSender<C::Message>,
     controller: Box<C>,
     resource_ctl: Option<Arc<ResourceController>>,
+    name: String,
 ) -> (BatchRouter<N, C>, BatchSystem<N, C>) {
     let state_cnt = Arc::new(AtomicUsize::new(0));
     let control_box = BasicMailbox::new(sender, controller, state_cnt.clone());
-    let (sender, receiver) = unbounded(resource_ctl);
-    let (low_sender, low_receiver) = unbounded(None); // no resource control for low fsm
+    let (sender, receiver) = unbounded(resource_ctl, name);
+    let (low_sender, low_receiver) = unbounded(None, "".to_string()); // no resource control for low fsm
     let normal_scheduler = NormalScheduler {
         sender: sender.clone(),
         low_sender,
