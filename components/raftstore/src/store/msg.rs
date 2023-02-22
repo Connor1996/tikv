@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use std::{borrow::Cow, fmt};
 
-use collections::HashSet;
+use collections::{HashMap, HashSet};
 use engine_traits::{CompactedEvent, KvEngine, Snapshot};
 use futures::channel::mpsc::UnboundedSender;
 use kvproto::{
@@ -36,7 +36,7 @@ use crate::store::{
         UnsafeRecoveryFillOutReportSyncer, UnsafeRecoveryForceLeaderSyncer,
         UnsafeRecoveryWaitApplySyncer,
     },
-    util::{KeysInfoFormatter, LatencyInspector},
+    util::{get_entry_header, KeysInfoFormatter, LatencyInspector},
     worker::{Bucket, BucketRange},
     SnapKey,
 };
@@ -773,7 +773,36 @@ pub enum PeerMsg<EK: KvEngine> {
     Destroy(u64),
 }
 
-impl<EK: KvEngine> ResourceMetered for PeerMsg<EK> {}
+use protobuf::Message;
+impl<EK: KvEngine> ResourceMetered for PeerMsg<EK> {
+    fn get_resource_consumptions(&self) -> Option<collections::HashMap<String, u64>> {
+        match self {
+            PeerMsg::RaftCommand(cmd) => {
+                let mut map = HashMap::default();
+                let header = cmd.request.get_header();
+                let group_name = header.get_resource_group_name().to_owned();
+                // TODO: compute size is not accurate enough
+                *map.entry(group_name).or_default() += cmd
+                    .request
+                    .requests
+                    .iter()
+                    .fold(0, |acc, x| acc + 1);
+                Some(map)
+            }
+            PeerMsg::RaftMessage(msg) => {
+                let mut map = HashMap::default();
+                for entry in msg.msg.get_message().get_entries() {
+                    let header = get_entry_header(entry);
+                    let group_name = header.get_resource_group_name().to_owned();
+                    // TODO: compute size is not accurate enough
+                    *map.entry(group_name).or_default() += 1;
+                }
+                Some(map)
+            }
+            _ => None,
+        }
+    }
+}
 
 impl<EK: KvEngine> fmt::Debug for PeerMsg<EK> {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {

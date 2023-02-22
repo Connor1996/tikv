@@ -1830,7 +1830,9 @@ pub fn create_raft_batch_system<EK: KvEngine, ER: RaftEngine>(
         &cfg.store_batch_system,
         store_tx,
         store_fsm,
-        None, // Do not do priority scheduling for store batch system
+        resource_manager
+            .as_ref()
+            .map(|m| m.derive_controller("store".to_owned(), false)),
     );
     let raft_router = RaftRouter { router };
     let system = RaftBatchSystem {
