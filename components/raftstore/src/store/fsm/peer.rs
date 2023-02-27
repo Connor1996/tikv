@@ -15,7 +15,7 @@ use std::{
     time::{Duration, Instant},
     u64,
 };
-
+use crate::store::util::get_entry_header;
 use batch_system::{BasicMailbox, Fsm};
 use collections::{HashMap, HashSet};
 use engine_traits::{Engines, KvEngine, RaftEngine, SstMetaInfo, WriteBatchExt, CF_LOCK, CF_RAFT};
@@ -174,6 +174,8 @@ where
     /// Before actually destroying a peer, ensure all log gc tasks are finished,
     /// so we can start destroying without seeking.
     logs_gc_flushed: bool,
+
+    pub last_msg_group: String,
 }
 
 pub struct BatchRaftCmdRequestBuilder<E>
@@ -294,6 +296,7 @@ where
                 trace: PeerMemoryTrace::default(),
                 delayed_destroy: None,
                 logs_gc_flushed: false,
+                last_msg_group: String::new(), 
             }),
         ))
     }
@@ -349,6 +352,7 @@ where
                 trace: PeerMemoryTrace::default(),
                 delayed_destroy: None,
                 logs_gc_flushed: false,
+                last_msg_group: String::new(),
             }),
         ))
     }
@@ -581,6 +585,10 @@ where
     {
         self.mailbox.take()
     }
+
+    fn get_last_msg_group(&self) -> Option<&str> {
+        Some(&self.last_msg_group)
+    }
 }
 
 pub struct PeerFsmDelegate<'a, EK, ER, T: 'static>
@@ -613,6 +621,12 @@ where
                     if !self.ctx.coprocessor_host.on_raft_message(&msg.msg) {
                         continue;
                     }
+                    for entry in msg.msg.get_message().get_entries() {
+                        let header = get_entry_header(entry);
+                        let group_name = header.get_resource_group_name().to_owned();
+                        self.fsm.last_msg_group = group_name;
+                        break;
+                    }
                     if let Err(e) = self.on_raft_message(msg) {
                         error!(%e;
                             "handle raft message err";
@@ -633,11 +647,15 @@ where
                                 propose_time.as_nanos() as u64;
                         })
                     });
-
+                  
                     if let Some(Err(e)) = cmd.extra_opts.deadline.map(|deadline| deadline.check()) {
                         cmd.callback.invoke_with_response(new_error(e.into()));
                         continue;
                     }
+
+                    let header = cmd.request.get_header();
+                    let group_name = header.get_resource_group_name().to_owned();
+                    self.fsm.last_msg_group = group_name;
 
                     let req_size = cmd.request.compute_size();
                     if self.ctx.cfg.cmd_batch

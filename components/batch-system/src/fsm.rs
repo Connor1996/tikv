@@ -62,6 +62,10 @@ pub trait Fsm: Send + 'static {
     fn get_priority(&self) -> Priority {
         Priority::Normal
     }
+
+    fn get_last_msg_group(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// A holder of FSM.

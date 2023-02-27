@@ -919,6 +919,10 @@ where
     EK: KvEngine,
     ER: RaftEngine,
 {
+    pub fn resource_controller(&self) -> Option<Arc<ResourceController>> {
+        self.resource_ctl.clone()
+    }
+
     pub fn senders(&self) -> WriteSenders<EK, ER> {
         WriteSenders::new(self.writers.clone())
     }
@@ -955,7 +959,7 @@ where
         assert_eq!(writers.len(), handlers.len());
         for (i, handler) in handlers.drain(..).enumerate() {
             info!("stopping store writer {}", i);
-            writers[i].send(WriteMsg::Shutdown, 0).unwrap();
+            writers[i].send(WriteMsg::Shutdown, 0, None).unwrap();
             handler.join().unwrap();
         }
     }

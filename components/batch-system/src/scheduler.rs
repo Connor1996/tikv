@@ -44,7 +44,8 @@ where
             Priority::Low => &self.low_sender,
         };
 
-        match sender.send(FsmTypes::Normal(fsm), 0) {
+        let g = fsm.get_last_msg_group().map(|s| s.to_owned());
+        match sender.send(FsmTypes::Normal(fsm), 0, g.as_ref().map(|s| s.as_str())) {
             Ok(_) => {}
             Err(SendError(FsmTypes::Normal(fsm))) => warn!("failed to schedule fsm {:p}", fsm),
             _ => unreachable!(),
@@ -55,8 +56,8 @@ where
         // TODO: close it explicitly once it's supported.
         // Magic number, actually any number greater than poll pool size works.
         for _ in 0..256 {
-            let _ = self.sender.send(FsmTypes::Empty, 0);
-            let _ = self.low_sender.send(FsmTypes::Empty, 0);
+            let _ = self.sender.send(FsmTypes::Empty, 0, None);
+            let _ = self.low_sender.send(FsmTypes::Empty, 0, None);
         }
     }
 }
@@ -88,7 +89,7 @@ where
 
     #[inline]
     fn schedule(&self, fsm: Box<C>) {
-        match self.sender.send(FsmTypes::Control(fsm), 0) {
+        match self.sender.send(FsmTypes::Control(fsm), 0, None) {
             Ok(_) => {}
             Err(SendError(FsmTypes::Control(fsm))) => warn!("failed to schedule fsm {:p}", fsm),
             _ => unreachable!(),
@@ -99,7 +100,7 @@ where
         // TODO: close it explicitly once it's supported.
         // Magic number, actually any number greater than poll pool size works.
         for _ in 0..256 {
-            let _ = self.sender.send(FsmTypes::Empty, 0);
+            let _ = self.sender.send(FsmTypes::Empty, 0, None);
         }
     }
 }

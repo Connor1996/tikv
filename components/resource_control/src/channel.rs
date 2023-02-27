@@ -9,7 +9,7 @@ use lazy_static::lazy_static;
 use prometheus::{register_int_counter_vec, IntCounterVec};
 use tikv_util::mpsc::priority_queue;
 
-use crate::{ResourceConsumeType, ResourceController};
+use crate::{ResourceConsumeType, ResourceController, resource_group};
 
 lazy_static! {
     pub static ref CHANNEL_RESOURCE_GROUP_COUNTER_VEC: IntCounterVec = register_int_counter_vec!(
@@ -105,7 +105,7 @@ impl<T: Send + 'static> Sender<T> {
     // It's used to make sure messages from one peer are sent in order.
     // The returned value is the priority that the message sent with. It is
     // calculated by resource controller and compared with `low_bound`.
-    pub fn send(&self, m: T, low_bound: u64) -> Result<u64, SendError<T>> {
+    pub fn send(&self, m: T, low_bound: u64, group: Option<&str>) -> Result<u64, SendError<T>> {
         match self {
             Sender::Vanilla(sender) => sender.send(m).map(|_| 0),
             Sender::Priority {
@@ -114,13 +114,19 @@ impl<T: Send + 'static> Sender<T> {
                 last_msg_group,
                 name,
             } => {
+                let last_msg_group = last_msg_group.borrow();
                 // TODO: pass different command priority
+                let resource_group = if let Some(group) = group {
+                    group
+                } else {
+                    last_msg_group.as_str()
+                };
                 CHANNEL_RESOURCE_GROUP_COUNTER_VEC
-                    .with_label_values(&[&name, last_msg_group.borrow().as_str()])
+                    .with_label_values(&[&name, resource_group])
                     .inc();
                 let priority = std::cmp::max(
                     resource_ctl
-                        .get_priority(last_msg_group.borrow().as_bytes(), CommandPri::Normal),
+                        .get_priority(resource_group.as_bytes(), CommandPri::Normal),
                     low_bound,
                 );
                 sender.send(m, priority).map(|_| priority)

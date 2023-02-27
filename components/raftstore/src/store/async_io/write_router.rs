@@ -241,7 +241,7 @@ where
             Ok(priority) => self.last_msg_priority = priority,
             Err(TrySendError::Full(msg)) => {
                 let now = Instant::now();
-                if sender.send(msg, self.last_msg_priority).is_err() {
+                if sender.send(msg, self.last_msg_priority, None).is_err() {
                     // Write threads are destroyed after store threads during shutdown.
                     safe_panic!("{} failed to send write msg, err: disconnected", self.tag);
                 }

@@ -14,7 +14,9 @@ use std::{
     time::{Duration, Instant},
     u64,
 };
-
+use tikv_util::time::InstantExt;
+use resource_control::ResourceController;
+use resource_control::ResourceConsumeType;
 use batch_system::{
     BasicMailbox, BatchRouter, BatchSystem, Config as BatchSystemConfig, Fsm, HandleResult,
     HandlerBuilder, PollHandler, Priority,
@@ -559,6 +561,8 @@ where
     pub write_senders: WriteSenders<EK, ER>,
     pub sync_write_worker: Option<WriteWorker<EK, ER, RaftRouter<EK, ER>, T>>,
     pub pending_latency_inspect: Vec<util::LatencyInspector>,
+
+    pub resource_controller: Option<Arc<ResourceController>>,
 }
 
 impl<EK, ER, T> PollContext<EK, ER, T>
@@ -939,6 +943,7 @@ impl<EK: KvEngine, ER: RaftEngine, T: Transport> PollHandler<PeerFsm<EK, ER>, St
         &mut self,
         peer: &mut impl DerefMut<Target = PeerFsm<EK, ER>>,
     ) -> HandleResult {
+        let now = Instant::now();
         let mut handle_result = HandleResult::KeepProcessing;
 
         fail_point!(
@@ -991,7 +996,12 @@ impl<EK: KvEngine, ER: RaftEngine, T: Transport> PollHandler<PeerFsm<EK, ER>, St
                 *skip_end = true;
             }
         }
-
+        if let Some(ctl) = &self.poll_ctx.resource_controller {
+            ctl.consume(
+                peer.last_msg_group.as_bytes(), 
+                ResourceConsumeType::CpuTime(now.saturating_elapsed()),
+            ); 
+        }
         handle_result
     }
 
@@ -1159,6 +1169,7 @@ pub struct RaftPollerBuilder<EK: KvEngine, ER: RaftEngine, T> {
     global_replication_state: Arc<Mutex<GlobalReplicationState>>,
     feature_gate: FeatureGate,
     write_senders: WriteSenders<EK, ER>,
+    resource_controller: Option<Arc<ResourceController>>,
 }
 
 impl<EK: KvEngine, ER: RaftEngine, T> RaftPollerBuilder<EK, ER, T> {
@@ -1407,6 +1418,7 @@ where
             write_senders: self.write_senders.clone(),
             sync_write_worker,
             pending_latency_inspect: vec![],
+            resource_controller: self.resource_controller.clone(),
         };
         ctx.update_ticks_timeout();
         let tag = format!("[store {}]", ctx.store.get_id());
@@ -1458,6 +1470,7 @@ where
             global_replication_state: self.global_replication_state.clone(),
             feature_gate: self.feature_gate.clone(),
             write_senders: self.write_senders.clone(),
+            resource_controller: self.resource_controller.clone(),
         }
     }
 }
@@ -1651,6 +1664,7 @@ impl<EK: KvEngine, ER: RaftEngine> RaftBatchSystem<EK, ER> {
             pending_create_peers: Arc::new(Mutex::new(HashMap::default())),
             feature_gate: pd_client.feature_gate().clone(),
             write_senders: self.store_writers.senders(),
+            resource_controller: self.store_writers.resource_controller(),
         };
         let region_peers = builder.init()?;
         self.start_system::<T, C>(
@@ -1832,7 +1846,7 @@ pub fn create_raft_batch_system<EK: KvEngine, ER: RaftEngine>(
         store_fsm,
         resource_manager
             .as_ref()
-            .map(|m| m.derive_controller("store".to_owned(), false)),
+            .map(|m| m.derive_controller("store".to_owned(), true)),
         "store".to_owned(),
     );
     let raft_router = RaftRouter { router };

@@ -776,28 +776,29 @@ pub enum PeerMsg<EK: KvEngine> {
 use protobuf::Message;
 impl<EK: KvEngine> ResourceMetered for PeerMsg<EK> {
     fn get_resource_consumptions(&self) -> Option<collections::HashMap<String, u64>> {
-        match self {
-            PeerMsg::RaftCommand(cmd) => {
-                let mut map = HashMap::default();
-                let header = cmd.request.get_header();
-                let group_name = header.get_resource_group_name().to_owned();
-                // TODO: compute size is not accurate enough
-                *map.entry(group_name).or_default() +=
-                    cmd.request.requests.iter().fold(0, |acc, x| acc + 1);
-                Some(map)
-            }
-            PeerMsg::RaftMessage(msg) => {
-                let mut map = HashMap::default();
-                for entry in msg.msg.get_message().get_entries() {
-                    let header = get_entry_header(entry);
-                    let group_name = header.get_resource_group_name().to_owned();
-                    // TODO: compute size is not accurate enough
-                    *map.entry(group_name).or_default() += 1;
-                }
-                Some(map)
-            }
-            _ => None,
-        }
+        None
+        // match self {
+        //     PeerMsg::RaftCommand(cmd) => {
+        //         let mut map = HashMap::default();
+        //         let header = cmd.request.get_header();
+        //         let group_name = header.get_resource_group_name().to_owned();
+        //         // TODO: compute size is not accurate enough
+        //         *map.entry(group_name).or_default() +=
+        //             cmd.request.requests.iter().fold(0, |acc, x| acc + 1);
+        //         Some(map)
+        //     }
+        //     PeerMsg::RaftMessage(msg) => {
+        //         let mut map = HashMap::default();
+        //         for entry in msg.msg.get_message().get_entries() {
+        //             let header = get_entry_header(entry);
+        //             let group_name = header.get_resource_group_name().to_owned();
+        //             // TODO: compute size is not accurate enough
+        //             *map.entry(group_name).or_default() += 1;
+        //         }
+        //         Some(map)
+        //     }
+        //     _ => None,
+        // }
     }
 }
 
