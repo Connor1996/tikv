@@ -105,7 +105,7 @@ impl SchedPool {
         if let Some(ref r) = resource_ctl {
             SchedPool::Priority {
                 worker_pool: builder(pool_size, "sched-worker-pool")
-                    .build_priority_future_pool(r.clone()),
+                    .build_multi_level_future_pool(),
                 resource_ctl: r.clone(),
             }
         } else {
