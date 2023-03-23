@@ -35,11 +35,11 @@ impl<F: Future> Future for ControlledFuture<F> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
-        let now = Instant::now();
+        // let now = Instant::now();
         let res = this.future.poll(cx);
         this.controller.consume(
             this.group_name,
-            ResourceConsumeType::CpuTime(now.saturating_elapsed()),
+            ResourceConsumeType::CpuTime(std::time::Duration::from_secs(1)),
         );
         res
     }
