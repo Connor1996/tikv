@@ -814,6 +814,8 @@ where
                         target_index: self.fsm.peer.raft_group.raft.raft_log.last_index(),
                         demote_after_exit: true,
                     });
+            } else {
+                self.fsm.peer.unsafe_recovery_state = Some(UnsafeRecoveryState::Failed);
             }
         } else {
             self.unsafe_recovery_demote_failed_voters(syncer, failed_voters);
@@ -853,6 +855,8 @@ where
                         target_index: self.fsm.peer.raft_group.raft.raft_log.last_index(),
                         demote_after_exit: false,
                     });
+            } else {
+                self.fsm.peer.unsafe_recovery_state = Some(UnsafeRecoveryState::Failed);
             }
         } else {
             warn!(
@@ -1448,7 +1452,7 @@ where
             } => {
                 self.on_enter_pre_force_leader(syncer, failed_stores);
             }
-            SignificantMsg::ExitForceLeaderState => self.on_exit_force_leader(),
+            SignificantMsg::ExitForceLeaderState => self.on_exit_force_leader(false),
             SignificantMsg::UnsafeRecoveryDemoteFailedVoters {
                 syncer,
                 failed_voters,
@@ -1682,8 +1686,17 @@ where
         self.fsm.has_ready = true;
     }
 
-    fn on_exit_force_leader(&mut self) {
+    fn on_exit_force_leader(&mut self, force: bool) {
         if self.fsm.peer.force_leader.is_none() {
+            return;
+        }
+        if let Some(UnsafeRecoveryState::Failed) = self.fsm.peer.unsafe_recovery_state && !force {
+            // Skip force leader if the plan failed, so wait for the next retry of plan with force leader state holding
+            info!(
+                "skip exiting force leader state";
+                "region_id" => self.fsm.region_id(),
+                "peer_id" => self.fsm.peer_id(),
+            );
             return;
         }
 
@@ -2255,7 +2268,9 @@ where
                 }
             }
             // Destroy does not need be processed, the state is cleaned up together with peer.
-            Some(_) | None => {}
+            Some(UnsafeRecoveryState::Destroy { .. })
+            | Some(UnsafeRecoveryState::Failed)
+            | None => {}
         }
     }
 
@@ -6063,7 +6078,7 @@ where
             // Clean up the force leader state after a timeout, since the PD recovery
             // process may have been aborted for some reasons.
             if time.saturating_elapsed() > UNSAFE_RECOVERY_STATE_TIMEOUT {
-                self.on_exit_force_leader();
+                self.on_exit_force_leader(true);
             }
         }
 

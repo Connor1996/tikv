@@ -849,6 +849,9 @@ pub enum UnsafeRecoveryState {
         demote_after_exit: bool,
     },
     Destroy(UnsafeRecoveryExecutePlanSyncer),
+    // DemoteFailedVoter may fail due to some reasons. It's just a marker to avoid exiting force
+    // leader state
+    Failed,
 }
 
 impl UnsafeRecoveryState {
@@ -857,6 +860,7 @@ impl UnsafeRecoveryState {
             UnsafeRecoveryState::WaitApply { syncer, .. } => syncer.time,
             UnsafeRecoveryState::DemoteFailedVoters { syncer, .. }
             | UnsafeRecoveryState::Destroy(syncer) => syncer.time,
+            UnsafeRecoveryState::Failed => return false,
         };
         time.saturating_elapsed() >= timeout
     }
@@ -866,6 +870,7 @@ impl UnsafeRecoveryState {
             UnsafeRecoveryState::WaitApply { syncer, .. } => &syncer.abort,
             UnsafeRecoveryState::DemoteFailedVoters { syncer, .. }
             | UnsafeRecoveryState::Destroy(syncer) => &syncer.abort,
+            UnsafeRecoveryState::Failed => return true,
         };
         *abort.lock().unwrap()
     }
@@ -875,6 +880,7 @@ impl UnsafeRecoveryState {
             UnsafeRecoveryState::WaitApply { syncer, .. } => syncer.abort(),
             UnsafeRecoveryState::DemoteFailedVoters { syncer, .. }
             | UnsafeRecoveryState::Destroy(syncer) => syncer.abort(),
+            UnsafeRecoveryState::Failed => (),
         }
     }
 }
