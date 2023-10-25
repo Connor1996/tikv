@@ -1012,6 +1012,7 @@ pub fn check_conf_change(
     change_peers: &[ChangePeerRequest],
     cc: &impl ConfChangeI,
     ignore_safety: bool,
+    peer_heartbeats: &HashMap<u64, Instant>,
 ) -> Result<()> {
     let current_progress = node.status().progress.unwrap().clone();
     let mut after_progress = current_progress.clone();
@@ -1088,7 +1089,7 @@ pub fn check_conf_change(
         }
     }
 
-    // Multiple changes that only effect learner will not product `IncommingVoter`
+    // Multiple changes that only effect learner will not product `IncomingVoter`
     // or `DemotingVoter` after apply, but raftstore layer and PD rely on these
     // roles to detect joint state
     if kind != ConfChangeKind::Simple && only_learner_change {
@@ -1098,11 +1099,15 @@ pub fn check_conf_change(
     if !ignore_safety {
         let promoted_commit_index = after_progress.maximal_committed_index().0;
         let first_index = node.raft.raft_log.first_index();
+       
         if current_progress.is_singleton() // It's always safe if there is only one node in the cluster.
             || promoted_commit_index + 1 >= first_index
         {
             return Ok(());
         }
+        if stores = self.peer_heartbeats.get_peers().iter().
+         // majority check
+         after_process.has_quorum()
 
         PEER_ADMIN_CMD_COUNTER_VEC
             .with_label_values(&["conf_change", "reject_unsafe"])

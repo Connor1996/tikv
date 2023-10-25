@@ -203,6 +203,50 @@ fn test_check_conf_change() {
     );
 }
 
+
+/// Conf change should consider labels when DrAutoSync is chosen.
+#[test]
+fn test_check_conf_change1() {
+    let mut cluster = prepare_cluster();
+    run_cluster(&mut cluster);
+    let pd_client = cluster.pd_client.clone();
+    pd_client.must_remove_peer(1, new_peer(2, 2));
+    must_get_none(&cluster.get_engine(2), b"k1");
+    cluster.add_send_filter(IsolationFilterFactory::new(2));
+    pd_client.must_add_peer(1, new_learner_peer(2, 4));
+    let region = cluster.get_region(b"k1");
+    // Peer 4 can be promoted as there will be enough quorum alive.
+    let cc = new_change_peer_request(ConfChangeType::AddNode, new_peer(2, 4));
+    let req = new_admin_request(region.get_id(), region.get_region_epoch(), cc);
+    let res = cluster
+        .call_command_on_leader(req, Duration::from_secs(3))
+        .unwrap();
+    assert!(!res.get_header().has_error(), "{:?}", res);
+    must_get_none(&cluster.get_engine(2), b"k1");
+    cluster.clear_send_filters();
+    must_get_equal(&cluster.get_engine(2), b"k1", b"v0");
+
+    pd_client.must_remove_peer(1, new_peer(3, 3));
+    must_get_none(&cluster.get_engine(3), b"k1");
+    cluster.add_send_filter(IsolationFilterFactory::new(3));
+    pd_client.must_add_peer(1, new_learner_peer(3, 5));
+    let region = cluster.get_region(b"k1");
+    // Peer 5 can not be promoted as there is no enough quorum alive.
+    let cc = new_change_peer_request(ConfChangeType::AddNode, new_peer(3, 5));
+    let req = new_admin_request(region.get_id(), region.get_region_epoch(), cc);
+    let res = cluster
+        .call_command_on_leader(req, Duration::from_secs(3))
+        .unwrap();
+    assert!(
+        res.get_header()
+            .get_error()
+            .get_message()
+            .contains("promoted commit index"),
+        "{:?}",
+        res
+    );
+}
+
 // Tests if group id is updated when adding new node and applying snapshot.
 #[test]
 fn test_update_group_id() {
