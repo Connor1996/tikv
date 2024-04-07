@@ -314,8 +314,8 @@ mod profiling {
     const PROF_RESET: &[u8] = b"prof.reset\0";
     const OPT_PROF: &[u8] = b"opt.prof\0";
 
-    pub fn set_prof_sample(rate: u64) -> ProfResult<()> {
-        let rate = (rate as f64).log2().ceil() as usize;
+    pub fn set_prof_sample(per_bytes: u64) -> ProfResult<()> {
+        let rate = (per_bytes as f64).log2().ceil() as u64;
         unsafe {
             if let Err(e) = tikv_jemalloc_ctl::raw::write(PROF_RESET, rate) {
                 return Err(ProfError::JemallocError(format!(
@@ -325,6 +325,16 @@ mod profiling {
             }
         }
         Ok(())
+    }
+
+    pub fn get_prof_sample() -> u64 {
+        let rate: u64 = match unsafe { tikv_jemalloc_ctl::raw::read(PROF_SAMPLE) } {
+            Err(e) => {
+                panic!("get_prof_sample: {:?}", e);
+            }
+            Ok(prof) => prof,
+        };
+        2_u64.pow(rate as u32)
     }
 
     pub fn activate_prof() -> ProfResult<()> {
@@ -404,6 +414,7 @@ mod profiling {
             assert!(!is_profiling_active());
 
             super::set_prof_sample(512 * 1024 * 1024).unwrap();
+            assert_eq!(19, super::get_prof_sample());
         }
 
         // Only trigger this test with jemallocs `opt.prof` set to
@@ -468,7 +479,7 @@ mod profiling {
     pub fn deactivate_prof() -> ProfResult<()> {
         Err(ProfError::MemProfilingNotEnabled)
     }
-    pub fn set_prof_sample(_rate: u64) -> ProfResult<()> {
+    pub fn set_prof_sample(per_bytes: u64) -> ProfResult<()> {
         Err(ProfError::MemProfilingNotEnabled)
     }
     pub fn is_profiling_active() -> bool {
