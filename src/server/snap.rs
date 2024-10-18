@@ -108,7 +108,7 @@ impl Display for Task {
 
 struct SnapChunk {
     first: Option<SnapshotChunk>,
-    snap: Box<Snapshot>,
+    snap: Arc<Snapshot>,
     remain_bytes: usize,
 }
 
@@ -177,10 +177,9 @@ pub fn send_snap(
         (key, snap_start, generate_duration_sec)
     };
 
-    mgr.register(key.clone(), SnapEntry::Sending);
     let deregister = {
         let (mgr, key) = (mgr.clone(), key.clone());
-        DeferContext::new(move || mgr.deregister(&key, &SnapEntry::Sending))
+        DeferContext::new(move || mgr.deregister(&key))
     };
 
     let s = box_try!(mgr.get_snapshot_for_sending(&key));
@@ -286,7 +285,7 @@ pub fn send_snap(
 
 struct RecvSnapContext {
     key: SnapKey,
-    file: Option<Box<Snapshot>>,
+    snap: Option<Arc<Snapshot>>,
     raft_msg: RaftMessage,
     io_type: IoType,
     start: Instant,
@@ -333,7 +332,7 @@ impl RecvSnapContext {
 
         Ok(RecvSnapContext {
             key,
-            file: snap,
+            snap,
             raft_msg: meta,
             io_type,
             start: Instant::now(),

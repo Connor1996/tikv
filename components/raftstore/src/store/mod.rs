@@ -73,7 +73,7 @@ pub use self::{
         check_abort, copy_snapshot,
         snap_io::{apply_sst_cf_file, build_sst_cf_file_list},
         ApplyOptions, CfFile, Error as SnapError, SnapEntry, SnapKey, SnapManager,
-        SnapManagerBuilder, Snapshot, SnapshotStatistics, TabletSnapKey, TabletSnapManager,
+        SnapManagerBuilder, Snapshot, TabletSnapKey, TabletSnapManager,
     },
     snapshot_backup::SnapshotBrWaitApplySyncer,
     transport::{CasualRouter, ProposalRouter, SignificantRouter, StoreRouter, Transport},
